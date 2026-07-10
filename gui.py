@@ -405,6 +405,9 @@ class App:
         ttk.Button(btn_frame, text="保存配置", command=self._save_config).pack(
             side="left", padx=5
         )
+        ttk.Button(btn_frame, text="坐标检测", command=self._start_coord_detection).pack(
+            side="left", padx=5
+        )
 
         # 停止按钮特殊：默认是禁用的（灰色不可点）
         # 只有运行中才启用，防止误触
@@ -658,6 +661,115 @@ class App:
         if self._esc_poll_id:
             self.root.after_cancel(self._esc_poll_id)
             self._esc_poll_id = None
+
+    # ==================== 坐标检测工具 ====================
+
+    def _start_coord_detection(self):
+        """
+        打开坐标检测窗口，实时显示鼠标位置。
+
+        功能：
+          - 左上角显示当前鼠标坐标（实时更新）
+          - 点击左键时记录"左键坐标"
+          - 点击右键时记录"右键坐标"
+          - 窗口始终置顶，方便对准微信窗口
+
+        原理：
+          用 pyautogui.position() 获取鼠标位置
+          用 Windows API GetKeyState 检测按键状态（非阻塞，不会锁死鼠标）
+          用 after() 每 50ms 轮询一次（不影响 GUI 响应）
+        """
+        # 如果已经有一个检测窗口，先关掉
+        if hasattr(self, "_coord_win") and self._coord_win:
+            try:
+                self._coord_win.destroy()
+            except:
+                pass
+
+        self._coord_win = tk.Toplevel(self.root)
+        self._coord_win.title("坐标检测")
+        self._coord_win.geometry("320x250+100+100")
+        self._coord_win.attributes("-topmost", True)  # 置顶
+        self._coord_win.resizable(False, False)
+
+        # 当前鼠标坐标（大字体显示）
+        tk.Label(self._coord_win, text="鼠标位置",
+                 font=("Microsoft YaHei", 9)).pack(pady=(10, 0))
+        self._coord_label = tk.Label(
+            self._coord_win, text="(0, 0)",
+            font=("Consolas", 18, "bold"),
+            foreground="#333333"
+        )
+        self._coord_label.pack(pady=(0, 10))
+
+        # 历史记录文本框
+        tk.Label(self._coord_win, text="点击记录（左键/右键）",
+                 font=("Microsoft YaHei", 9)).pack()
+        self._coord_log = tk.Text(
+            self._coord_win, height=5, width=38,
+            font=("Consolas", 10), state="normal", wrap="char"
+        )
+        self._coord_log.pack(padx=10, pady=(0, 5))
+
+        # 关闭按钮
+        tk.Button(self._coord_win, text="关闭",
+                  command=self._stop_coord_detection,
+                  font=("Microsoft YaHei", 10)).pack(pady=(0, 10))
+
+        # 初始化状态变量
+        self._coord_left_down = False
+        self._coord_right_down = False
+        self._coord_running = True
+
+        # 开始轮询
+        self._poll_coord()
+
+    def _poll_coord(self):
+        """轮询鼠标位置和按键状态（每 50ms 执行一次）"""
+        if not getattr(self, "_coord_running", False):
+            return
+
+        x, y = pyautogui.position()
+
+        # 更新坐标显示
+        self._coord_label.config(text=f"({x}, {y})")
+
+        # 用 Windows API 检测鼠标按键状态（非阻塞，不模拟点击）
+        # pyautogui.mouseDown() 会实际按住鼠标，不能用在这里
+        left_now = ctypes.windll.user32.GetKeyState(0x01) & 0x80 != 0
+        if left_now and not self._coord_left_down:
+            self._coord_log.insert("end", f"左键: ({x}, {y})\n")
+            self._coord_log.see("end")
+        self._coord_left_down = left_now
+
+        right_now = ctypes.windll.user32.GetKeyState(0x02) & 0x80 != 0
+        if right_now and not self._coord_right_down:
+            self._coord_log.insert("end", f"右键: ({x}, {y})\n")
+            self._coord_log.see("end")
+        self._coord_right_down = right_now
+
+        # 继续轮询
+        if self._coord_running:
+            try:
+                self._coord_poll_id = self._coord_win.after(50, self._poll_coord)
+            except:
+                self._coord_running = False
+
+    def _stop_coord_detection(self):
+        """关闭坐标检测窗口"""
+        self._coord_running = False
+        if hasattr(self, "_coord_poll_id") and self._coord_poll_id:
+            try:
+                self._coord_win.after_cancel(self._coord_poll_id)
+            except:
+                pass
+            self._coord_poll_id = None
+        if hasattr(self, "_coord_win") and self._coord_win:
+            try:
+                self._coord_win.destroy()
+            except:
+                pass
+            self._coord_win = None
 
     def _stop(self):
         """

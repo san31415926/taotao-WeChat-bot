@@ -1,3 +1,12 @@
+"""
+微信群发工具 GUI 版
+本软件由 淘淘数码 研发，版权归 淘淘数码 所有。
+仅限于授权用户内部使用，禁止用于任何商业用途。
+未经许可，禁止复制、修改、分发或转售。
+解释权归 淘淘数码 所有。
+"""
+
+import os
 import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext
 import threading
@@ -12,6 +21,7 @@ CONFIG_FIELDS = [
     ("group_prefixes", "群名前缀（逗号分隔）", "str_list"),
     ("groups_per_prefix", "每个前缀群数量", "int"),
     ("send_times", "定时时间（逗号分隔）", "str_list"),
+    ("speed_factor", "速度倍率（0.2=极速 0.5=2倍 1.0=正常）", "float"),
     ("interval_between_groups", "前缀间隔秒数", "int"),
     ("log_level", "日志级别", "choice"),
 ]
@@ -113,18 +123,31 @@ class App:
         )
         self.log_text.pack(fill="both", expand=True)
 
+        # ── 版权声明 ──
+        notice = ttk.Label(
+            main, text="本软件由 淘淘数码 研发，禁止用于商业用途 | 解释权归 淘淘数码 所有",
+            foreground="gray", font=("Microsoft YaHei", 8)
+        )
+        notice.pack(pady=(2, 0))
+
     # ── 文件列表管理 ──
 
     def _refresh_file_list(self):
         self.file_listbox.delete(0, "end")
-        self.all_files = sw.get_available_txt_files()
+        names = sw.get_available_txt_files()
         selected = sw.CONFIG.get("txt_files", [])
+        sel_basenames = {os.path.basename(p) for p in selected}
 
-        for f in self.all_files:
-            self.file_listbox.insert("end", f)
+        self.all_files = []
+        for name in names:
+            full = os.path.join(sw.SCRIPT_DIR, name)
+            if not os.path.exists(full):
+                full = os.path.join(r"C:\Users\zcxz\Desktop\脚本test", name)
+            self.all_files.append(full)
+            self.file_listbox.insert("end", name)
 
-        for i, f in enumerate(self.all_files):
-            if f in selected:
+        for i, full in enumerate(self.all_files):
+            if os.path.basename(full) in sel_basenames or full in selected:
                 self.file_listbox.selection_set(i)
 
     def _get_selected_files(self):
@@ -146,7 +169,7 @@ class App:
                 self.entries[key].set(", ".join(val))
             elif vtype == "str":
                 self.entries[key].set(val)
-            elif vtype == "int":
+            elif vtype in ("int", "float"):
                 self.entries[key].set(str(val))
             elif vtype == "choice":
                 self.entries[key].set(str(val))
@@ -165,14 +188,25 @@ class App:
                 except ValueError:
                     messagebox.showerror("配置错误", f"{key} 需要填写整数")
                     return None
+            elif vtype == "float":
+                try:
+                    new_cfg[key] = float(raw)
+                except ValueError:
+                    messagebox.showerror("配置错误", f"{key} 需要填写数字")
+                    return None
             elif vtype == "choice":
                 new_cfg[key] = raw if raw in LOG_LEVELS else "INFO"
+        # 全角冒号转半角
+        if "send_times" in new_cfg:
+            new_cfg["send_times"] = [t.replace("：", ":") for t in new_cfg["send_times"]]
         new_cfg["txt_files"] = self._get_selected_files()
         return new_cfg
 
     def _apply_config(self, cfg):
         for key, val in cfg.items():
             sw.CONFIG[key] = val
+        sw.pyautogui.PAUSE = sw.CONFIG.get("click_delay", 0.05)
+        sw.SPEED_FACTOR = sw.CONFIG.get("speed_factor", 1.0)
         logger = logging.getLogger()
         logger.setLevel(getattr(logging, sw.CONFIG["log_level"]))
 
@@ -181,7 +215,8 @@ class App:
         if cfg is None:
             return
         self._apply_config(cfg)
-        messagebox.showinfo("已保存", "配置已保存")
+        sw.save_config_to_file()
+        messagebox.showinfo("已保存", "配置已保存到文件，重启后生效")
 
     def _enable_stop(self, enabled=True):
         self.stop_btn.config(state="normal" if enabled else "disabled")

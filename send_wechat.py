@@ -1,6 +1,11 @@
 # ============================================================
 # 微信定时群发工具
 # ============================================================
+# 本软件由 淘淘数码 研发，版权归 淘淘数码 所有。
+# 仅限于授权用户内部使用，禁止用于任何商业用途。
+# 未经许可，禁止复制、修改、分发或转售。
+# 解释权归 淘淘数码 所有。
+# ============================================================
 # 原理：用 Python 模拟人的键盘和鼠标操作，自动控制微信 PC 版
 # 流程：发消息给自己 → 右键菜单选"转发" → 搜索群名 → 勾选群 → 发送
 #
@@ -39,28 +44,23 @@ pyautogui.FAILSAFE = True
 import threading
 
 STOP_EVENT = threading.Event()
+SPEED_FACTOR = 1.0  # 会被 CONFIG["speed_factor"] 覆盖
 
 _time_sleep = time.sleep
 
 
 def _safe_sleep(seconds):
-    end = time.monotonic() + seconds
+    actual = seconds * SPEED_FACTOR
+    end = time.monotonic() + actual
     while time.monotonic() < end:
+        if pyautogui.position() == (0, 0):
+            STOP_EVENT.set()
         if STOP_EVENT.is_set():
             raise SystemExit("紧急停止: 已触发停止信号")
-        if pyautogui.position() == (0, 0):
-            raise pyautogui.FailSafeException("紧急停止: 鼠标已移到左上角")
         _time_sleep(min(0.1, end - time.monotonic()))
 
 
 time.sleep = _safe_sleep
-
-
-# PAUSE = 每个操作之间的默认停顿时间（单位：秒）
-# 比如按下键盘后，等 0.1 秒再执行下一个操作
-# 如果设得太短（比如 0），操作太快可能导致微信没反应过来
-# 如果设得太长，整个流程会变慢
-pyautogui.PAUSE = 0.05
 
 
 # ==================== 第三步：配置区 ====================
@@ -91,12 +91,12 @@ CONFIG = {
 
     # ---------- 要发送的文件列表（为空则自动选择所有txt） ----------
     "txt_files": [
-        "苹果17.txt",
-        "苹果16.txt",
-        "苹果15.txt",
-        "苹果14.txt",
-        "苹果13.txt",
-        "苹果12.txt",
+        r"C:\Users\zcxz\Desktop\脚本test\苹果17.txt",
+        r"C:\Users\zcxz\Desktop\脚本test\苹果16.txt",
+        r"C:\Users\zcxz\Desktop\脚本test\苹果15.txt",
+        r"C:\Users\zcxz\Desktop\脚本test\苹果14.txt",
+        r"C:\Users\zcxz\Desktop\脚本test\苹果13.txt",
+        r"C:\Users\zcxz\Desktop\脚本test\苹果12.txt",
     ],
 
     # ---------- 定时发送时间 ----------
@@ -109,6 +109,11 @@ CONFIG = {
         "12:00",
         "18:00",
     ],
+
+    # ---------- 全局速度倍率 ----------
+    # 1.0=正常，0.5=2倍速，0.3=3倍速，0.2=极速
+    # 所有等待时间都会乘以这个值，调低总耗时大幅缩短
+    "speed_factor": 0.5,
 
     # ---------- 发完一个前缀后等几秒 ----------
     # 比如发完 00A001 的 9 个群后，等 1 秒再发 00A002
@@ -130,12 +135,53 @@ CONFIG = {
 # os.path.dirname 取它所在的目录
 # os.path.abspath 转换成绝对路径（防止有相对路径的问题）
 # 结果：SCRIPT_DIR = "C:\Users\zcxz\Desktop\脚本test"
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if getattr(sys, 'frozen', False):
+    SCRIPT_DIR = os.path.dirname(sys.executable)
+else:
+    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # 统计数据存放在 data/send_stats.json 文件里
 # os.path.join 的作用是把目录和文件名拼成完整路径
 # 结果：DATA_FILE = "C:\Users\zcxz\Desktop\脚本test\data\send_stats.json"
 DATA_FILE = os.path.join(SCRIPT_DIR, "data", "send_stats.json")
+CONFIG_FILE = os.path.join(SCRIPT_DIR, "data", "config.json")
+
+
+def save_config_to_file():
+    """把当前 CONFIG 保存到 data/config.json"""
+    cleaned = {
+        k: [t.replace("：", ":") for t in v] if k == "send_times" else v
+        for k, v in CONFIG.items()
+    }
+    CONFIG.update(cleaned)
+    pyautogui.PAUSE = CONFIG.get("click_delay", 0.05)
+    global SPEED_FACTOR; SPEED_FACTOR = CONFIG.get("speed_factor", 1.0)
+    os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(cleaned, f, ensure_ascii=False, indent=2)
+    try:
+        logger.info("配置已保存到文件")
+    except NameError:
+        print("配置已保存到文件")
+
+
+def load_config_from_file():
+    """从 data/config.json 加载配置（如果存在）"""
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+            saved["send_times"] = [t.replace("：", ":") for t in saved.get("send_times", [])]
+            CONFIG.update(saved)
+            try:
+                logger.info("已加载配置文件")
+            except NameError:
+                pass
+        except Exception as e:
+            try:
+                logger.warning(f"配置文件加载失败: {e}")
+            except NameError:
+                pass
 
 
 # ==================== 第五步：配置日志系统 ====================
@@ -160,6 +206,14 @@ logging.basicConfig(
 # __name__ 是当前模块的名字，这里就是 "__main__"
 # 创建一个日志记录器，后面用 logger.info() 来打印信息
 logger = logging.getLogger(__name__)
+
+
+# 启动时自动加载保存的配置
+load_config_from_file()
+
+# 应用全局速度
+pyautogui.PAUSE = CONFIG.get("click_delay", 0.05)
+SPEED_FACTOR = CONFIG.get("speed_factor", 1.0)
 
 
 # ==================== 第六步：窗口管理函数 ====================
@@ -228,13 +282,15 @@ def activate_wechat():
 # ==================== 第七步：读取要发送的内容 ====================
 
 def get_available_txt_files():
-    """扫描目录，返回所有可用的 txt 文件名列表。"""
+    """返回所有可用的 txt 文件（文件名列表）。"""
     import glob
-    files = glob.glob(os.path.join(SCRIPT_DIR, "*.txt"))
-    files = [
-        os.path.basename(f) for f in files
-        if "send_stats" not in f and ".git" not in f
-    ]
+    files = []
+    for dirpath in (SCRIPT_DIR, r"C:\Users\zcxz\Desktop\脚本test"):
+        if os.path.isdir(dirpath):
+            for f in glob.glob(os.path.join(dirpath, "*.txt")):
+                name = os.path.basename(f)
+                if "send_stats" not in name and ".git" not in name and name not in files:
+                    files.append(name)
     files.sort(reverse=True)
     return files
 

@@ -34,14 +34,15 @@ from datetime import datetime  # 获取当前时间（年-月-日 时:分:秒）
 
 # ==================== 第二步：pyautogui 的全局设置 ====================
 
-# FAILSAFE = 安全开关，True 表示开启
-# 当鼠标移到屏幕左上角 (0,0) 位置时，pyautogui 会立即停止所有操作并报错
-# 这是防止自动化失控的安全措施——万一程序乱点，你直接把鼠标甩到左上角就能紧急停止
+# FAILSAFE = 安全开关，设为 True 作为备用紧急停止方式
+# 主要用 ESC 键停止，但如果 ESC 没生效，鼠标移到左上角 (0,0) 也能触发停止
+# 这是双重保险，防止自动化失控
 pyautogui.FAILSAFE = True
 
 
 # ==================== 紧急停止 ====================
 import threading
+import ctypes
 
 STOP_EVENT = threading.Event()
 SPEED_FACTOR = 1.0  # 会被 CONFIG["speed_factor"] 覆盖
@@ -49,11 +50,32 @@ SPEED_FACTOR = 1.0  # 会被 CONFIG["speed_factor"] 覆盖
 _time_sleep = time.sleep
 
 
+def _is_esc_pressed():
+    """
+    检测 ESC 键是否被按下（非阻塞，无需额外库）。
+
+    原理：
+      用 Windows API 的 GetAsyncKeyState 检测键盘状态
+      0x1B 是 ESC 键的虚拟键码（Virtual Key Code）
+      GetAsyncKeyState 返回一个 16 位的整数
+      如果最高位（bit 15）是 1，表示按键当前被按下
+      用 & 0x8000 提取最高位
+
+    优点：
+      - 不依赖额外库（不用 pip install keyboard）
+      - 非阻塞，瞬间返回 True/False
+      - 全局检测，不管窗口焦点在哪都有效
+    """
+    return (ctypes.windll.user32.GetAsyncKeyState(0x1B) & 0x8000) != 0
+
+
 def _safe_sleep(seconds):
     actual = seconds * SPEED_FACTOR
     end = time.monotonic() + actual
     while time.monotonic() < end:
-        if pyautogui.position() == (0, 0):
+        # 检测 ESC 键——按一下就触发紧急停止
+        # 比鼠标移到左上角更快速、更顺手
+        if _is_esc_pressed():
             STOP_EVENT.set()
         if STOP_EVENT.is_set():
             raise SystemExit("紧急停止: 已触发停止信号")
@@ -90,13 +112,16 @@ CONFIG = {
     "groups_per_prefix": 9,
 
     # ---------- 要发送的文件列表（为空则自动选择所有txt） ----------
+    # 注意：只存文件名（如 "苹果17.txt"），不存完整路径
+    # 程序会自动从 exe 所在目录读取这些文件
+    # 别人使用时，把 exe 和 txt 文件放在同一个文件夹就行
     "txt_files": [
-        r"C:\Users\zcxz\Desktop\脚本test\苹果17.txt",
-        r"C:\Users\zcxz\Desktop\脚本test\苹果16.txt",
-        r"C:\Users\zcxz\Desktop\脚本test\苹果15.txt",
-        r"C:\Users\zcxz\Desktop\脚本test\苹果14.txt",
-        r"C:\Users\zcxz\Desktop\脚本test\苹果13.txt",
-        r"C:\Users\zcxz\Desktop\脚本test\苹果12.txt",
+        "苹果17.txt",
+        "苹果16.txt",
+        "苹果15.txt",
+        "苹果14.txt",
+        "苹果13.txt",
+        "苹果12.txt",
     ],
 
     # ---------- 定时发送时间 ----------
@@ -125,6 +150,14 @@ CONFIG = {
     # 支持格式：30s（秒）、5m（分钟）、1h（小时）
     # 设成 0s 表示不等待
     "interval_between_files": "3m",
+
+    # ---------- 鼠标点击坐标（相对于微信窗口左上角） ----------
+    # 如果你的微信窗口在屏幕左上角 (0,0) 位置，那这些值就和旧版坐标一样
+    # 换电脑或改分辨率后，运行 python send_wechat.py --align 重新校准
+    # click_msg_offset  = 右键点击消息的位置
+    # click_send_offset = 点击"发送"按钮的位置
+    "click_msg_offset": [1643, 811],
+    "click_send_offset": [1055, 763],
 
     # ---------- 日志详细程度 ----------
     # DEBUG：最详细，会打印每一个步骤（适合调试）
@@ -159,6 +192,9 @@ def save_config_to_file():
         k: [t.replace("：", ":") for t in v] if k == "send_times" else v
         for k, v in CONFIG.items()
     }
+    # 确保 txt_files 只存文件名（不存完整路径）
+    if "txt_files" in cleaned:
+        cleaned["txt_files"] = [os.path.basename(f) for f in cleaned["txt_files"]]
     CONFIG.update(cleaned)
     pyautogui.PAUSE = CONFIG.get("click_delay", 0.05)
     global SPEED_FACTOR; SPEED_FACTOR = CONFIG.get("speed_factor", 1.0)
@@ -291,12 +327,11 @@ def get_available_txt_files():
     """返回所有可用的 txt 文件（文件名列表）。"""
     import glob
     files = []
-    for dirpath in (SCRIPT_DIR, r"C:\Users\zcxz\Desktop\脚本test"):
-        if os.path.isdir(dirpath):
-            for f in glob.glob(os.path.join(dirpath, "*.txt")):
-                name = os.path.basename(f)
-                if "send_stats" not in name and ".git" not in name and name not in files:
-                    files.append(name)
+    if os.path.isdir(SCRIPT_DIR):
+        for f in glob.glob(os.path.join(SCRIPT_DIR, "*.txt")):
+            name = os.path.basename(f)
+            if "send_stats" not in name and ".git" not in name and name not in files:
+                files.append(name)
     files.sort(reverse=True)
     return files
 
@@ -382,34 +417,36 @@ def forward_to_groups(prefix, count):
     第二步：通过"转发"功能，把消息群发到多个群。
 
     流程详解：
-      1. 右键点击刚才发出去的那条消息 → 弹出菜单
-      2. 按 5 次下箭头选到"转发" → 回车打开转发对话框
-      3. 转发对话框的搜索框里会自动有焦点，粘贴群名前缀
-      4. 搜索结果中按 4 次下箭头到"展开全部" → 回车展开
-      5. 按 3 次上箭头回到第一个群
-      6. 逐条勾选群：下箭头 + 回车（勾选）
-      7. 点击"发送"按钮
+       1. 右键点击刚才发出去的那条消息 → 弹出菜单
+       2. 按 5 次下箭头选到"转发" → 回车打开转发对话框
+       3. 转发对话框的搜索框里会自动有焦点，粘贴群名前缀
+       4. 搜索结果中按 4 次下箭头到"展开全部" → 回车展开
+       5. 按 3 次上箭头回到第一个群
+       6. 逐条勾选群：下箭头 + 回车（勾选）
+       7. 点击"发送"按钮
 
     参数：
       prefix: 群名前缀，比如 "00A001"
-              脚本会搜索这个前缀，找到所有匹配的群
       count:  要勾选几个群，比如 9
-              如果搜索结果不足 9 个，可能会出错
 
     关于坐标：
-      (835, 612) = 消息在屏幕上的位置（右键点击用）
-      (655, 775) = "发送"按钮在屏幕上的位置
-      这两个坐标是在微信窗口对齐后测出来的
-      如果微信窗口位置变了，这两个坐标就不准了
+      坐标是相对于微信窗口左上角的位置偏移
+      这样不管微信窗口在屏幕哪个位置，鼠标都能点对地方
+      换电脑后用 --align 重新校准
     """
 
+    # 获取当前微信窗口位置
+    w = get_window()
+    if not w:
+        logger.error("微信窗口未找到，无法获取坐标")
+        return
+
+    msg_off = CONFIG["click_msg_offset"]
+    send_off = CONFIG["click_send_offset"]
+
     # ===== 1. 右键点击消息，弹出菜单 =====
-    # rightClick = 鼠标右键点击
-    # 参数 (835, 612) = 屏幕上的 X 和 Y 坐标（像素）
-    # 这个坐标是你之前测出来的，指向"刚发出去的那条消息"的位置
-    # 如果消息位置变了，需要重新测坐标
-    pyautogui.rightClick(1643, 811)
-    time.sleep(0.5)  # 等 0.5 秒让菜单弹出来
+    pyautogui.rightClick(w.left + msg_off[0], w.top + msg_off[1])
+    time.sleep(0.5)
 
     # ===== 2. 在右键菜单中选"转发" =====
     # 右键菜单会出现在鼠标位置附近
@@ -462,10 +499,9 @@ def forward_to_groups(prefix, count):
         time.sleep(0.2)
 
     # ===== 7. 点击"发送"按钮 =====
-    # 勾选完所有群后，点击转发对话框里的"发送"按钮
-    # (655, 775) 是你测出来的发送按钮坐标
+    # 用配置里的坐标偏移 + 窗口当前位置
     time.sleep(0.5)
-    pyautogui.click(1055, 763)  # 鼠标左键点击
+    pyautogui.click(w.left + send_off[0], w.top + send_off[1])
     time.sleep(1)              # 等发送完成
 
 

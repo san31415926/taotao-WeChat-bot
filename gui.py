@@ -32,6 +32,7 @@ from io import StringIO  # 内存中的"文件"，用来临时存文本
 
 import pyautogui          # 键盘鼠标模拟（核心自动化库）
 import send_wechat as sw  # 导入我们自己的核心脚本，起个简短别名 sw
+import ctypes             # Windows API 调用（检测 ESC 键）
 
 
 # ==================== 配置字段定义 ====================
@@ -49,11 +50,15 @@ CONFIG_FIELDS = [
     ("interval_between_groups", "前缀间隔秒数",               "int"),
     ("interval_between_files", "文件发送间隔（如 5m、30s、1h）", "str"),
     ("log_level",            "日志级别",                     "choice"),
+    ("click_msg_offset",     "右键坐标 X,Y（窗口左上角偏移）",  "int_pair"),
+    ("click_send_offset",    "发送坐标 X,Y（窗口左上角偏移）",  "int_pair"),
     # 值类型说明：
     #   str_list = 逗号分隔的字符串，解析成列表
     #   int      = 整数
     #   float    = 小数
     #   choice   = 下拉选择框
+    #   int_pair = 两个整数，用逗号分隔（如 "1643, 811"）
+    #   str      = 普通文本
 ]
 
 LOG_LEVELS = ["DEBUG", "INFO", "WARNING", "ERROR"]
@@ -207,6 +212,11 @@ class App:
         # file_vars 用来存储文件复选框的状态
         # 但当前版本用了 Listbox，所以这个变量其实没用了
         self.file_vars = {}
+        self._esc_poll_id = None  # ESC 轮询的 after ID
+
+        # ---- 绑定全局快捷键 ----
+        # 当 GUI 窗口有焦点时，按 ESC 也能触发停止
+        self.root.bind("<Escape>", lambda e: self._stop())
 
         # ---- 构建界面 ----
         self._build_ui()
@@ -448,10 +458,7 @@ class App:
         # 重新填充列表框
         self.all_files = []
         for name in names:
-            # 优先用 SCRIPT_DIR，不行就用硬编码路径
             full = os.path.join(sw.SCRIPT_DIR, name)
-            if not os.path.exists(full):
-                full = os.path.join(r"C:\Users\zcxz\Desktop\脚本test", name)
             self.all_files.append(full)
             self.file_listbox.insert("end", name)
 
@@ -501,6 +508,9 @@ class App:
                 self.entries[key].set(str(val))
             elif vtype == "choice":
                 self.entries[key].set(str(val))
+            elif vtype == "int_pair":
+                # 列表 → 字符串：[1643, 811] → "1643, 811"
+                self.entries[key].set(f"{val[0]}, {val[1]}")
 
     def _read_config_from_ui(self):
         """
@@ -552,6 +562,17 @@ class App:
             elif vtype == "choice":
                 # 如果用户输入的值不在选项里，用默认值 INFO
                 new_cfg[key] = raw if raw in LOG_LEVELS else "INFO"
+
+            elif vtype == "int_pair":
+                # 解析 "1643, 811" → [1643, 811]
+                try:
+                    parts = [int(p.strip()) for p in raw.split(",") if p.strip()]
+                    if len(parts) != 2:
+                        raise ValueError("需要两个整数")
+                    new_cfg[key] = parts
+                except (ValueError, IndexError):
+                    messagebox.showerror("配置错误", f"{key} 需要两个整数，用逗号分隔（如 1643, 811）")
+                    return None
 
         # 全角冒号转半角（避免手误输入了全角符号）
         if "send_times" in new_cfg:
@@ -613,6 +634,31 @@ class App:
         """
         self.stop_btn.config(state="normal" if enabled else "disabled")
 
+    # ==================== ESC 按键轮询 ====================
+    # 从 tkinter 主线程轮询 ESC 键状态（主线程有消息队列，GetAsyncKeyState 才能正常工作）
+    # 即使后台自动操作时 WeChat 窗口在最前面，ESC 也能被检测到
+
+    def _poll_esc(self):
+        """每 200ms 检查一次 ESC 是否被按下"""
+        if ctypes.windll.user32.GetAsyncKeyState(0x1B) & 0x8000:
+            sw.STOP_EVENT.set()
+            sw.logger.warning("检测到 ESC 按键，紧急停止")
+            self._enable_stop(False)
+            self._esc_poll_id = None
+            return
+        self._esc_poll_id = self.root.after(200, self._poll_esc)
+
+    def _start_esc_polling(self):
+        """启动 ESC 轮询"""
+        self._stop_esc_polling()
+        self._esc_poll_id = self.root.after(200, self._poll_esc)
+
+    def _stop_esc_polling(self):
+        """停止 ESC 轮询"""
+        if self._esc_poll_id:
+            self.root.after_cancel(self._esc_poll_id)
+            self._esc_poll_id = None
+
     def _stop(self):
         """
         停止按钮的回调函数。
@@ -621,6 +667,7 @@ class App:
         sw.STOP_EVENT.set()  # 设置"停止"信号
         sw.logger.warning("已触发停止信号，等待当前操作完成后停止...")
         self._enable_stop(False)  # 禁用停止按钮（防止重复点击）
+        self._stop_esc_polling()   # 停止 ESC 轮询
 
     def _run_once(self):
         """
@@ -659,6 +706,7 @@ class App:
         self.log_text.delete("1.0", "end")
         self.log_text.insert("end", ">>> 立即运行中...\n")
         self._enable_stop(True)  # 启用停止按钮
+        self._start_esc_polling()  # 开始轮询 ESC 键
 
         def task():
             """
@@ -669,7 +717,7 @@ class App:
             try:
                 sw.do_send()  # 执行发送
             except (SystemExit, pyautogui.FailSafeException):
-                # 用户停止了或鼠标移到左上角触发安全机制
+                # 用户按 ESC 或点了停止按钮
                 sw.logger.warning("已停止")
             except Exception as e:
                 # 其他未预料到的错误
@@ -677,6 +725,7 @@ class App:
             finally:
                 # 不管怎样，最后都要把停止按钮恢复为禁用状态
                 self.root.after(0, self._enable_stop, False)
+                self.root.after(0, self._stop_esc_polling)
 
         # 创建并启动新线程
         threading.Thread(target=task, daemon=True).start()
@@ -699,6 +748,7 @@ class App:
             f">>> 定时模式启动，发送时间: {sw.CONFIG['send_times']}\n"
         )
         self._enable_stop(True)
+        self._start_esc_polling()
 
         def task():
             try:
@@ -709,6 +759,7 @@ class App:
                 sw.logger.error(f"定时任务出错: {e}")
             finally:
                 self.root.after(0, self._enable_stop, False)
+                self.root.after(0, self._stop_esc_polling)
 
         threading.Thread(target=task, daemon=True).start()
 

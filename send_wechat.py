@@ -120,6 +120,12 @@ CONFIG = {
     # 设大一点（比如 3 秒）更稳定，设小一点更快
     "interval_between_groups": 1,
 
+    # ---------- 每个文件的发送间隔 ----------
+    # 发完一个 TXT 文件后等多久再发下一个
+    # 支持格式：30s（秒）、5m（分钟）、1h（小时）
+    # 设成 0s 表示不等待
+    "interval_between_files": "3m",
+
     # ---------- 日志详细程度 ----------
     # DEBUG：最详细，会打印每一个步骤（适合调试）
     # INFO：普通，只打印关键信息（日常用这个）
@@ -631,7 +637,41 @@ def export_csv(path):
     logger.info(f"已导出统计到 {path}")
 
 
-# ==================== 第十步：执行一次完整发送 ====================
+# ==================== 第十步：时间间隔解析工具 ====================
+
+def parse_interval(text):
+    """
+    把 "30s"、"5m"、"1h" 这样的字符串转成秒数。
+
+    支持格式：
+      "30s" → 30 秒      （s = seconds）
+      "5m"  → 300 秒     （m = minutes）
+      "1h"  → 3600 秒    （h = hours）
+      "0"   → 0 秒       （纯数字也兼容）
+      ""    → 0 秒       （空字符串也兼容）
+
+    实现原理：
+      1. 去掉首尾空格
+      2. 看最后一个字符是不是 s/m/h 之一
+      3. 如果是，把前面的数字部分取出来，乘以对应倍数
+      4. 如果不是，直接当秒数解析
+    """
+    text = text.strip()
+    if not text:
+        return 0
+
+    unit = text[-1].lower()  # 取最后一个字符，转小写
+    if unit == "s":
+        return int(text[:-1])
+    elif unit == "m":
+        return int(text[:-1]) * 60
+    elif unit == "h":
+        return int(text[:-1]) * 3600
+    else:
+        return int(text)
+
+
+# ==================== 第十一步：执行一次完整发送 ====================
 
 def do_send(verbose=False):
     """
@@ -654,7 +694,7 @@ def do_send(verbose=False):
     grand_total = 0
     grand_failed = 0
 
-    for name, content in files:
+    for idx, (name, content) in enumerate(files):
         if verbose:
             print(f"--- [{name}] 发送内容 ---\n{content}\n---------------")
 
@@ -662,7 +702,28 @@ def do_send(verbose=False):
         total, failed = send_to_all(content)
         grand_total += total
         grand_failed += failed
-        time.sleep(CONFIG["interval_between_groups"])
+
+        # 如果不是最后一个文件，按设定的间隔等待再发下一个
+        # 注意：文件间隔是真实时间，不应该被 speed_factor 缩放
+        # 所以不用 time.sleep（已被 _safe_sleep 替换）
+        # 而是用原始 sleep + 每秒检测一次停止信号
+        if idx < len(files) - 1:
+            interval = parse_interval(CONFIG["interval_between_files"])
+            if interval > 0:
+                logger.info(f"等待 {interval} 秒后发送下一个文件...")
+                remaining = interval
+                while remaining > 0:
+                    if STOP_EVENT.is_set():
+                        logger.warning("停止信号触发，终止发送")
+                        save_stats({
+                            "total_sends": 0,
+                            "last_send": None,
+                            "history": []
+                        })
+                        return
+                    chunk = min(1.0, remaining)
+                    _time_sleep(chunk)
+                    remaining -= chunk
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -711,9 +772,9 @@ def run_daemon():
     logger.info(f"守护进程启动中，定时发送时间: {CONFIG['send_times']}")
 
     # 无限循环：反复检查有没有到点的任务
-    while True:
+    while not STOP_EVENT.is_set():
         schedule.run_pending()  # 执行所有到点的任务
-        time.sleep(30)          # 每 30 秒检查一次，省 CPU
+        time.sleep(3)           # 每 3 秒检查一次，点了停止最多等 3 秒
 
 
 # ==================== 第十二步：微信窗口对齐工具 ====================
@@ -766,9 +827,7 @@ def show_align_guide():
 
 
     # 窗口属性设置
-    root.attribute
-    
-    s("-topmost", True)              # 置顶（在其他窗口上面）
+    root.attributes("-topmost", True)              # 置顶（在其他窗口上面）
     root.attributes("-transparentcolor", "white")  # 白色部分透明
     root.overrideredirect(True)                    # 去掉标题栏和边框
 

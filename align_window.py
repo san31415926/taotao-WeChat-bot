@@ -1,7 +1,7 @@
 """
 微信窗口对齐工具
 把微信窗口拖到绿色框框里，对齐后关掉这个窗口就行。
-这样右键坐标 (835,612) 和发送按钮坐标 (655,775) 就永远准确了。
+这样右键坐标 (1295,758) 和发送按钮坐标 (1111,876) 就永远准确了。
 """
 
 import tkinter as tk
@@ -44,7 +44,7 @@ canvas.create_text(
 # 在框内显示坐标信息
 canvas.create_text(
     WX_LEFT + WX_WIDTH // 2, WX_TOP + WX_HEIGHT // 2 - 20,
-    text="右键消息 ≈ (835, 612)\n发送按钮 ≈ (655, 775)",
+    text="右键消息 ≈ (1295, 758)\n发送按钮 ≈ (1111, 876)",
     fill="#00ff00",
     font=("Microsoft YaHei", 12),
     justify="center"

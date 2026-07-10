@@ -179,49 +179,48 @@ def get_window():
 
 def activate_wechat():
     """
-    激活微信窗口，把它显示到屏幕最前面。
+    激活微信窗口，最大化并拉到最前面。
 
-    为什么要激活？
-      键盘鼠标模拟只能操作"前台"窗口，如果微信被挡住了或用最小化了
-      我们的按键就发不到微信上，可能发到别的软件去了
-
-    执行步骤：
-      1. get_window() 找到微信窗口
-      2. 如果窗口最小化或隐藏，restore() 恢复它
-      3. 如果窗口在屏幕外（-32000），先最小化再恢复，强制它弹出来
-      4. activate() 把它拉到最前面
-      5. 等 0.8 秒让窗口完全显示出来
+    用 Windows API（user32.dll）：
+      ShowWindow(hwnd, SW_RESTORE) → 从托盘/最小化恢复
+      ShowWindow(hwnd, SW_MAXIMIZE) → 最大化，位置固定
+      SetForegroundWindow(hwnd)   → 拉到最前面
 
     返回值：
       True  = 成功激活
       False = 找不到微信窗口（可能没打开微信）
     """
+    import ctypes
+
     w = get_window()
-    if not w:  # 没找到窗口
+    if not w:
         logger.error("未找到微信窗口")
         return False
 
-    # isMinimized: 窗口是否最小化（缩到任务栏）
-    # visible: 窗口是否可见（可能被其他窗口完全挡住了）
-    if w.isMinimized or not w.visible:
-        w.restore()  # 从最小化状态恢复
-        time.sleep(0.3)
+    hwnd = w._hWnd
 
-    # 检查窗口是否在屏幕外（-32000 表示最小化到任务栏但没有 isMinimized 标记）
-    # 这种情况需要先最小化再恢复，强制 Windows 把它弹出来
-    if w.left < -1000 or w.top < -1000:
-        w.minimize()       # 先最小化
-        time.sleep(0.3)
-        w.restore()        # 再恢复，这样一定能弹出来
-        time.sleep(0.3)
+    SW_RESTORE = 9    # 恢复窗口
+    SW_MAXIMIZE = 3   # 最大化窗口
 
-    # 把窗口移到预期位置（避免屏幕外的情况再次发生）
-    if abs(w.left - WX_EXPECTED["left"]) > 50 or abs(w.top - WX_EXPECTED["top"]) > 50:
-        w.moveTo(WX_EXPECTED["left"], WX_EXPECTED["top"])
-        time.sleep(0.3)
+    is_valid = ctypes.windll.user32.IsWindow(hwnd)
+    logger.debug(f"微信窗口句柄={hwnd}, 有效={is_valid}, 位置=({w.left}, {w.top})")
 
-    w.activate()  # 把窗口提到最前面
-    time.sleep(0.8)  # 等 0.8 秒让微信反应过来
+    if not is_valid:
+        logger.error("微信窗口句柄无效")
+        return False
+
+    # 1. 恢复窗口（从托盘弹出）
+    ctypes.windll.user32.ShowWindow(hwnd, SW_RESTORE)
+    time.sleep(0.3)
+
+    # 2. 最大化
+    ctypes.windll.user32.ShowWindow(hwnd, SW_MAXIMIZE)
+    time.sleep(0.5)
+
+    # 3. 拉到最前面
+    ctypes.windll.user32.SetForegroundWindow(hwnd)
+    time.sleep(0.8)
+
     return True
 
 
@@ -365,7 +364,7 @@ def forward_to_groups(prefix, count):
     # 参数 (835, 612) = 屏幕上的 X 和 Y 坐标（像素）
     # 这个坐标是你之前测出来的，指向"刚发出去的那条消息"的位置
     # 如果消息位置变了，需要重新测坐标
-    pyautogui.rightClick(835, 612)
+    pyautogui.rightClick(1643, 811)
     time.sleep(0.5)  # 等 0.5 秒让菜单弹出来
 
     # ===== 2. 在右键菜单中选"转发" =====
@@ -422,7 +421,7 @@ def forward_to_groups(prefix, count):
     # 勾选完所有群后，点击转发对话框里的"发送"按钮
     # (655, 775) 是你测出来的发送按钮坐标
     time.sleep(0.5)
-    pyautogui.click(655, 775)  # 鼠标左键点击
+    pyautogui.click(1055, 763)  # 鼠标左键点击
     time.sleep(1)              # 等发送完成
 
 
@@ -694,50 +693,20 @@ def run_daemon():
         time.sleep(30)          # 每 30 秒检查一次，省 CPU
 
 
-# ==================== 第十二步：微信窗口对齐工具 ====================
-# 如果微信窗口位置变了，之前测的坐标（835,612）就不准了
-# 运行 python send_wechat.py --align 会在屏幕上画一个绿色框
-# 你把微信窗口拖进去对齐，坐标就回到标准值了
-#
-# 什么时候需要重新对齐？
-#   1. 第一次使用本脚本
-#   2. 移动了微信窗口位置
-#   3. 换了显示器或改了分辨率
-#   4. 点击右键或发送按钮时位置不对
-
-
-# 微信窗口在屏幕上的预期位置
-# left  = 窗口左边距屏幕左边的像素数
-# top   = 窗口上边距屏幕顶部的像素数
-# width = 窗口的宽度
-# height = 窗口的高度
-#
-# 当前值 (337, 206, 896, 648) 是在你电脑上测出来的
-# 如果换了电脑或改了分辨率，需要用 --align 重新对齐
-WX_EXPECTED = {
-    "left": 337,
-    "top": 206,
-    "width": 896,
-    "height": 648
-}
+# ==================== 第十二步：运行时绿色参考框 ====================
+# 在屏幕中央显示"发送中"提示，方便你看到脚本在运行
 
 
 def create_overlay():
     """
-    创建绿色虚线框，并启动 tkinter 主循环阻塞等待。
-
-    原理：
-      tkinter 必须在主线程跑 mainloop 窗口才不卡死。
-      自动化的发送逻辑放在后台线程跑。
-      发送完后调用 root.destroy() 结束 mainloop。
-
-    返回值：
-      root: tkinter 窗口对象（调用 root.destroy() 关闭）
+    在屏幕中央显示"发送中"提示框。
+    主线程跑 tkinter 事件循环，自动化在后台线程跑。
+    发送完后自动关闭。
     """
     import tkinter as tk
 
     root = tk.Tk()
-    root.title("微信对齐框 - 运行时参考")
+    root.title("发送中")
     root.attributes("-topmost", True)
     root.attributes("-transparentcolor", "white")
     root.overrideredirect(True)
@@ -749,183 +718,128 @@ def create_overlay():
     canvas = tk.Canvas(root, highlightthickness=0, bg="white")
     canvas.pack(fill="both", expand=True)
 
-    cfg = WX_EXPECTED
-
-    canvas.create_rectangle(
-        cfg["left"], cfg["top"],
-        cfg["left"] + cfg["width"], cfg["top"] + cfg["height"],
-        outline="#00ff00", width=4, dash=(10, 5)
-    )
     canvas.create_text(
-        cfg["left"] + cfg["width"] // 2, cfg["top"] - 20,
-        text="← 微信窗口放到这个框里 →",
-        fill="#00ff00", font=("Microsoft YaHei", 14, "bold")
-    )
-    canvas.create_text(
-        cfg["left"] + cfg["width"] // 2, cfg["top"] + cfg["height"] // 2,
-        text=(
-            "右键消息 ≈ (835, 612)\n"
-            "发送按钮 ≈ (655, 775)\n\n"
-            "发送完成后自动关闭"
-        ),
-        fill="#00ff00", font=("Microsoft YaHei", 12), justify="center"
+        screen_w // 2, screen_h // 2,
+        text="微信群发脚本运行中...\n发送完成后自动关闭",
+        fill="#00ff00", font=("Microsoft YaHei", 20, "bold"),
+        justify="center"
     )
 
-    return root  # 返回 root，外面用它来关闭窗口
-
-
-def show_align_guide():
-    """
-    在屏幕上画一个绿色虚线框（阻塞版，用于 --align 手动对齐）。
-    提示用户把微信窗口拖进去，按 ESC 或点 ✕ 关闭。
-
-    原理：
-      用 tkinter（Python 自带的 GUI 库）创建一个全屏幕透明窗口
-      在透明窗口上画一个绿色矩形框
-    """
-    import tkinter as tk
-
-    root = tk.Tk()
-    root.title("微信对齐工具 - 把微信拖到框里")
-    root.attributes("-topmost", True)
-    root.attributes("-transparentcolor", "white")
-    root.overrideredirect(True)
-
-    screen_w = root.winfo_screenwidth()
-    screen_h = root.winfo_screenheight()
-    root.geometry(f"{screen_w}x{screen_h}+0+0")
-
-    canvas = tk.Canvas(root, highlightthickness=0, bg="white")
-    canvas.pack(fill="both", expand=True)
-
-    cfg = WX_EXPECTED
-    canvas.create_rectangle(
-        cfg["left"], cfg["top"],
-        cfg["left"] + cfg["width"], cfg["top"] + cfg["height"],
-        outline="#00ff00", width=4, dash=(10, 5)
-    )
-    canvas.create_text(
-        cfg["left"] + cfg["width"] // 2, cfg["top"] - 20,
-        text="← 把微信拖到这个框里对齐 →",
-        fill="#00ff00", font=("Microsoft YaHei", 14, "bold")
-    )
-    canvas.create_text(
-        cfg["left"] + cfg["width"] // 2, cfg["top"] + cfg["height"] // 2,
-        text=(
-            "右键消息 ≈ (835, 612)\n"
-            "发送按钮 ≈ (655, 775)\n\n"
-            "对齐后按 ESC 或点 ✕ 关闭"
-        ),
-        fill="#00ff00", font=("Microsoft YaHei", 12), justify="center"
-    )
-    canvas.create_text(
-        screen_w - 60, 20,
-        text="✕ 关闭", fill="red",
-        font=("Microsoft YaHei", 12, "bold"), tags="close"
-    )
-    canvas.tag_bind("close", "<Button-1>", lambda e: root.destroy())
-    root.bind("<Escape>", lambda e: root.destroy())
-
-    root.mainloop()
-
-
-def check_window_position():
-    """
-    检查微信窗口是否在预期的位置。
-    如果位置偏差超过 10 像素，会在日志里警告。
-
-    为什么要检查？
-      如果窗口位置不对，右键坐标 (835,612) 和发送按钮坐标 (655,775)
-      就会点错地方，可能点到别的聊天或按钮
-    """
-    w = get_window()
-    if not w:
-        return
-
-    cfg = WX_EXPECTED
-
-    # abs = absolute = 绝对值
-    # abs(左边界偏差) 或 abs(上边界偏差) 超过 10 像素就告警
-    if abs(w.left - cfg["left"]) > 10 or abs(w.top - cfg["top"]) > 10:
-        logger.warning(
-            f"微信窗口位置 ({w.left}, {w.top}) 与预期 ({cfg['left']}, {cfg['top']}) 不一致，"
-            f"建议运行 python send_wechat.py --align 对齐"
-        )
+    return root
 
 
 # ==================== 第十三步：命令行入口 ====================
 
+def get_position():
+    """
+    鼠标坐标测量工具。
+    实时显示鼠标在屏幕上的位置，把鼠标停到目标位置读坐标就行。
+    按 Ctrl+C 退出。
+
+    用法：python send_wechat.py --getpos
+    """
+    print("=" * 50)
+    print("坐标测量工具")
+    print("  把鼠标移到目标位置，控制台会显示坐标")
+    print("  记下坐标后填到脚本里")
+    print("  按 Ctrl+C 退出")
+    print("=" * 50)
+    print()
+
+    last_pos = None
+    try:
+        while True:
+            x, y = pyautogui.position()
+            if (x, y) != last_pos:
+                print(f"\r鼠标: ({x:4d}, {y:4d})    ", end="")
+                last_pos = (x, y)
+    except KeyboardInterrupt:
+        print("\n\n已退出")
+
+
 def main():
     """
-    命令行入口。这是用户和程序交互的界面。
+    命令行入口。
 
-    支持的命令（在终端/CMD/PowerShell 里运行）：
+    支持的命令：
       python send_wechat.py --once         # 立即执行一次发送
-      python send_wechat.py --daemon       # 启动定时发送（按配置时间自动发）
+      python send_wechat.py --daemon       # 启动定时发送
       python send_wechat.py --stats        # 查看发送统计
       python send_wechat.py --export 1.csv # 导出统计到 Excel
-      python send_wechat.py --align        # 显示绿色框（对齐微信窗口）
-      python send_wechat.py -v --once      # 详细模式 + 立即发送（看每一步）
+      python send_wechat.py --getpos       # 测坐标工具
+      python send_wechat.py -v --once      # 详细模式
 
-    不传任何参数时会显示帮助信息。
+    不传参数时弹出菜单让你选。
     """
-    # argparse 的用法：
-    #   1. 创建一个 ArgumentParser 对象，传入描述文字
-    #   2. 用 add_argument 添加每个参数
-    #   3. parse_args() 解析用户实际输入的命令
-
     parser = argparse.ArgumentParser(description="微信定时群发工具")
-
-    # action="store_true" 表示：如果用户写了 --once，args.once = True
-    # help 是显示帮助时的说明文字
     parser.add_argument("--once", action="store_true", help="立即执行一次发送")
     parser.add_argument("--daemon", action="store_true", help="启动定时守护进程")
     parser.add_argument("--stats", action="store_true", help="显示发送统计")
     parser.add_argument("--export", type=str, help="导出统计到 CSV 文件（如 --export 统计.csv）")
-    parser.add_argument("--align", action="store_true", help="显示对齐框（定位微信窗口）")
+    parser.add_argument("--getpos", action="store_true", help="测坐标：移到目标位置按 F6 记录")
     parser.add_argument("-v", "--verbose", action="store_true", help="详细日志模式")
-    # -v 是缩写，--verbose 是完整写法，两者都可以
 
-    # 解析用户输入的命令
     args = parser.parse_args()
 
-    # 如果开启了详细模式，把日志级别调成 DEBUG（最详细）
     if args.verbose:
         logger.setLevel(logging.DEBUG)
-        for h in logger.handlers:  # 遍历所有日志处理器
+        for h in logger.handlers:
             h.setLevel(logging.DEBUG)
 
-    # 根据用户输入的命令执行对应的功能
-    # 注意：这些命令是互斥的，一次只能选一个
-    if args.align:
-        show_align_guide()                # 显示绿色对齐框（手动模式，等用户关）
+    if args.getpos:
+        get_position()
     elif args.stats:
-        show_stats()                      # 显示统计
+        show_stats()
     elif args.export:
-        export_csv(args.export)           # 导出到 CSV
+        export_csv(args.export)
     elif args.daemon:
-        root = create_overlay()           # 显示绿色对齐框
-        def daemon_thread():
-            run_daemon()
-        t = threading.Thread(target=daemon_thread, daemon=True)
+        root = create_overlay()
+        t = threading.Thread(target=run_daemon, daemon=True)
         t.start()
-        root.mainloop()                   # 等用户手动关闭窗口
+        root.mainloop()
     elif args.once:
-        root = create_overlay()           # 显示绿色对齐框
+        root = create_overlay()
         def send_thread():
             try:
-                check_window_position()   # 先检查窗口位置
-                do_send(verbose=args.verbose)  # 立即发送
+                do_send(verbose=args.verbose)
             finally:
-                # 发送完了，通知主线程关掉窗口
                 root.after(0, root.destroy)
-                # root.after(0, fn) 的意思是：一有空就在主线程执行 fn
-                # 因为 destroy 必须在主线程里调用
         t = threading.Thread(target=send_thread, daemon=True)
         t.start()
-        root.mainloop()                   # 主线程跑 tkinter 事件循环，窗口才不会卡死
+        root.mainloop()
     else:
-        parser.print_help()               # 没传参数就显示帮助
+        print("=" * 50)
+        print("  微信定时群发工具")
+        print("=" * 50)
+        print(f"  定时时间: {', '.join(CONFIG['send_times'])}")
+        print(f"  群前缀: {', '.join(CONFIG['group_prefixes'])}")
+        print(f"  发送文件: {', '.join(CONFIG['txt_files'])}")
+        print("=" * 50)
+        print()
+        print("请选择运行模式：")
+        print("  [1] 定时模式 — 按设定时间自动发送")
+        print("  [2] 立即运行 — 立刻执行一次发送")
+        print("  [q] 退出")
+        print()
+        choice = input("请输入 (1/2/q): ").strip()
+
+        if choice == "1":
+            root = create_overlay()
+            t = threading.Thread(target=run_daemon, daemon=True)
+            t.start()
+            root.mainloop()
+        elif choice == "2":
+            root = create_overlay()
+            def send_thread():
+                try:
+                    do_send()
+                finally:
+                    root.after(0, root.destroy)
+            t = threading.Thread(target=send_thread, daemon=True)
+            t.start()
+            root.mainloop()
+        else:
+            print("已退出")
 
 
 # ==================== 第十四步：程序入口 ====================

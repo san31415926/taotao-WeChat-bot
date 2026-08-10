@@ -35,6 +35,24 @@ import send_wechat as sw  # 导入我们自己的核心脚本，起个简短别�
 import ctypes             # Windows API 调用（检测 ESC 键）
 
 
+def maximize_window(root):
+    """Request the standard maximized state on Windows."""
+    root.state("zoomed")
+
+
+FOLDER_SEARCH_LABEL = "搜索文件夹:"
+FOLDER_LIST_HEIGHT = 12
+LOG_HEIGHT = 8
+
+
+def filter_folder_names(names, query):
+    """Return names containing the search query, preserving their order."""
+    query = (query or "").strip().casefold()
+    if not query:
+        return list(names)
+    return [name for name in names if query in name.casefold()]
+
+
 # ==================== 配置字段定义 ====================
 # 这是一个"元组列表"——
 # 每个元素是一个三元素的元组 (键名, 标签文字, 值类型)
@@ -49,9 +67,12 @@ CONFIG_FIELDS = [
     ("speed_factor",         "速度倍率（0.2=极速 0.5=2倍 1.0=正常）", "float"),
     ("interval_between_groups", "前缀间隔秒数",               "int"),
     ("interval_between_files", "文件发送间隔（如 5m、30s、1h）", "str"),
+    ("video_next_step_wait", "视频转发完成后等待（如 5m、30s、1h）", "str"),
     ("log_level",            "日志级别",                     "choice"),
     ("click_msg_offset",     "右键坐标 X,Y（窗口左上角偏移）",  "int_pair"),
     ("click_send_offset",    "发送坐标 X,Y（窗口左上角偏移）",  "int_pair"),
+    ("media_prepare_wait",   "图片/视频载入等待秒数",           "int"),
+    ("media_upload_wait",    "图片/视频发送后等待秒数",         "int"),
     # 值类型说明：
     #   str_list = 逗号分隔的字符串，解析成列表
     #   int      = 整数
@@ -207,11 +228,14 @@ class App:
         # 设置窗口最小尺寸：宽不能小于 800，高不能小于 650
         # 拖动窗口右下角时不会小于这个尺寸
         self.root.minsize(800, 650)
+        maximize_window(self.root)
 
         # ---- 初始化实例变量 ----
         # file_vars 用来存储文件复选框的状态
         # 但当前版本用了 Listbox，所以这个变量其实没用了
         self.file_vars = {}
+        self.folder_search_var = tk.StringVar()
+        self._selected_paths = None
         self._esc_poll_id = None  # ESC 轮询的 after ID
 
         # ---- 绑定全局快捷键 ----
@@ -224,7 +248,7 @@ class App:
         # ---- 把配置加载到输入框 ----
         self._load_config()
 
-        # ---- 刷新文件列表（显示目录下的 txt 文件） ----
+        # ---- 刷新发送组合列表 ----
         self._refresh_file_list()
 
         # ---- 设置日志系统 ----
@@ -346,8 +370,8 @@ class App:
 
         # ============ 2. 文件选择区域 ============
 
-        file_frame = ttk.LabelFrame(main, text="选择发送文件（可多选）", padding=10)
-        file_frame.pack(fill="x", pady=(0, 10))
+        file_frame = ttk.LabelFrame(main, text="选择发送组合（可多选）", padding=10)
+        file_frame.pack(fill="both", expand=True, pady=(0, 10))
 
         # 按钮行
         top_row = ttk.Frame(file_frame)
@@ -362,20 +386,34 @@ class App:
             side="left", padx=5
         )
 
+        search_row = ttk.Frame(file_frame)
+        search_row.pack(fill="x", pady=(0, 5))
+        ttk.Label(search_row, text=FOLDER_SEARCH_LABEL).pack(side="left")
+        search_entry = ttk.Entry(
+            search_row, textvariable=self.folder_search_var, width=30
+        )
+        search_entry.pack(side="left", fill="x", expand=True, padx=(10, 5))
+        ttk.Button(
+            search_row, text="清空", command=self._clear_folder_search
+        ).pack(side="left")
+        self.folder_search_var.trace_add(
+            "write", lambda *_: self._refresh_file_list()
+        )
+
         # 文件列表框
         list_frame = ttk.Frame(file_frame)
-        list_frame.pack(fill="x")
+        list_frame.pack(fill="both", expand=True)
 
         # Listbox = 列表框，可以显示多个项目
         # selectmode="multiple" = 可以按住 Ctrl 多选
-        # height=6 = 显示 6 行的高度
+        # height=FOLDER_LIST_HEIGHT = 文件夹列表的基础显示行数
         # font=("Consolas", 10) = 等宽字体 Consolas，大小 10
         # exportselection=False = 防止选中内容被其他窗口抢走
         self.file_listbox = tk.Listbox(
-            list_frame, selectmode="multiple", height=6,
+            list_frame, selectmode="multiple", height=FOLDER_LIST_HEIGHT,
             font=("Consolas", 10), exportselection=False
         )
-        self.file_listbox.pack(side="left", fill="x", expand=True)
+        self.file_listbox.pack(side="left", fill="both", expand=True)
 
         # 添加滚动条
         scrollbar = ttk.Scrollbar(
@@ -419,16 +457,16 @@ class App:
         # ============ 4. 日志显示区域 ============
 
         log_frame = ttk.LabelFrame(main, text="运行日志", padding=5)
-        log_frame.pack(fill="both", expand=True)  # fill="both" + expand=True = 占据剩余空间
+        log_frame.pack(fill="x", expand=False)
 
         # ScrolledText = 带滚动条的文本框
-        # height=15 = 初始显示 15 行高度
+        # height=LOG_HEIGHT = 运行日志的较小固定高度
         # wrap="word" = 按单词换行（不是按字符）
         self.log_text = scrolledtext.ScrolledText(
-            log_frame, height=15, font=("Consolas", 10),
+            log_frame, height=LOG_HEIGHT, font=("Consolas", 10),
             wrap="word", state="normal"
         )
-        self.log_text.pack(fill="both", expand=True)
+        self.log_text.pack(fill="both", expand=False)
 
         # ============ 5. 底部版权声明（已移至右侧面板） ============
 
@@ -436,27 +474,50 @@ class App:
 
     def _refresh_file_list(self):
         """
-        刷新文件列表框。
-        调用 sw.get_available_txt_files() 获取所有可用的 txt 文件，
+        刷新发送组合列表框。
+        优先显示含一个 TXT 和一张图片或一个视频的产品文件夹；
+        没有组合文件夹时，再显示根目录中的旧版发送文件。
         显示在列表框中，并恢复已选中的项目。
 
         sw 是 send_wechat 模块的别名（写在文件顶部了）。
         """
+        had_existing_list = hasattr(self, "all_files")
+        previous_mode = getattr(self, "file_list_mode", None)
+        if had_existing_list:
+            visible_before = set(self.all_files)
+            current_selected = {
+                self.all_files[i] for i in self.file_listbox.curselection()
+            }
+            previous_selected = set(self._selected_paths or ())
+            selected_paths = (previous_selected - visible_before) | current_selected
+        else:
+            selected_paths = None
+
         # 清空列表框（从第 0 项到末尾全部删除）
         self.file_listbox.delete(0, "end")
 
-        # 获取可用文件列表
-        names = sw.get_available_txt_files()
+        folder_names = sw.get_available_send_folders()
+        self.file_list_mode = "folders" if folder_names else "files"
+        names = folder_names if folder_names else sw.get_available_files()
+        names = filter_folder_names(names, self.folder_search_var.get())
 
-        # 获取已选中的文件列表
-        selected = sw.CONFIG.get("txt_files", [])
+        if selected_paths is None or previous_mode != self.file_list_mode:
+            if self.file_list_mode == "folders":
+                selected = sw.CONFIG.get("send_folders", [])
+            else:
+                selected = sw.CONFIG.get("send_files", sw.CONFIG.get("txt_files", []))
+            selected_paths = {
+                os.path.join(sw.SCRIPT_DIR, os.path.basename(path))
+                for path in selected
+            }
         # 把选中文件的"文件名部分"提取出来，放到一个集合里
         # {os.path.basename(p) for p in selected} 这叫"集合推导式"
         # 相当于：
         #   result = set()
         #   for p in selected:
         #       result.add(os.path.basename(p))
-        sel_basenames = {os.path.basename(p) for p in selected}
+        sel_basenames = {os.path.basename(p) for p in selected_paths}
+        self._selected_paths = set(selected_paths)
 
         # 重新填充列表框
         self.all_files = []
@@ -467,7 +528,7 @@ class App:
 
         # 恢复选中状态
         for i, full in enumerate(self.all_files):
-            if os.path.basename(full) in sel_basenames or full in selected:
+            if os.path.basename(full) in sel_basenames or full in selected_paths:
                 self.file_listbox.selection_set(i)
 
     def _get_selected_files(self):
@@ -477,7 +538,17 @@ class App:
         curselection() 方法返回当前选中的项目的索引元组
         比如 (0, 2, 3) 表示第 0、2、3 项被选中
         """
-        return [self.all_files[i] for i in self.file_listbox.curselection()]
+        visible = set(self.all_files)
+        current = {self.all_files[i] for i in self.file_listbox.curselection()}
+        selected = (set(self._selected_paths or ()) - visible) | current
+        self._selected_paths = selected
+        return [path for path in self.all_files if path in selected] + sorted(
+            selected - visible
+        )
+
+    def _clear_folder_search(self):
+        """Clear the folder search query and restore the full list."""
+        self.folder_search_var.set("")
 
     def _select_all(self):
         """选中列表框中的所有项目。"""
@@ -583,8 +654,11 @@ class App:
                 t.replace("：", ":") for t in new_cfg["send_times"]
             ]
 
-        # 把文件列表框的选中状态也加入配置
-        new_cfg["txt_files"] = self._get_selected_files()
+        # 把列表框的选中状态也加入配置
+        if self.file_list_mode == "folders":
+            new_cfg["send_folders"] = self._get_selected_files()
+        else:
+            new_cfg["send_files"] = self._get_selected_files()
 
         return new_cfg
 

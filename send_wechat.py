@@ -25,11 +25,37 @@ import json    # 读写 JSON 格式的数据文件（用来存发送统计）
 import csv     # 导出 CSV 表格（能用 Excel 打开）
 import argparse  # 解析命令行参数（比如 --once --daemon 这些）
 import logging   # 日志系统（在控制台打印带时间的信息）
+from dataclasses import dataclass
 
 import pyperclip          # 剪贴板操纵（复制粘贴文字）
 import pyautogui          # 键盘鼠标模拟（核心自动化库）
 import pygetwindow as gw  # 查找和操纵 Windows 窗口
 from datetime import datetime  # 获取当前时间（年-月-日 时:分:秒）
+
+
+TEXT_EXTENSIONS = {".txt"}
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"}
+VIDEO_EXTENSIONS = {
+    ".mp4", ".mov", ".avi", ".mkv", ".wmv", ".flv", ".webm", ".m4v"
+}
+
+
+@dataclass(frozen=True)
+class SendFile:
+    """A selected text, image, or video file ready for the send pipeline."""
+
+    name: str
+    kind: str
+    path: str
+    content: str | None = None
+
+
+@dataclass(frozen=True)
+class SendBatch:
+    """One product folder whose items must be sent in the listed order."""
+
+    name: str
+    files: tuple[SendFile, ...]
 
 
 # ==================== 第二步：pyautogui 的全局设置 ====================
@@ -111,10 +137,17 @@ CONFIG = {
     # 如果你某个前缀只有 8 个群，改成 8 就行
     "groups_per_prefix": 9,
 
-    # ---------- 要发送的文件列表（为空则自动选择所有txt） ----------
-    # 注意：只存文件名（如 "苹果17.txt"），不存完整路径
-    # 程序会自动从 exe 所在目录读取这些文件
-    # 别人使用时，把 exe 和 txt 文件放在同一个文件夹就行
+    # ---------- 要发送的文件列表（为空则自动选择所有支持的文件） ----------
+    # 支持 TXT、图片和视频；只存文件名，不存完整路径
+    "send_files": [
+        "苹果17.txt",
+        "苹果16.txt",
+        "苹果15.txt",
+        "苹果14.txt",
+        "苹果13.txt",
+        "苹果12.txt",
+    ],
+    # 旧版配置名，保留用于兼容已有配置文件
     "txt_files": [
         "苹果17.txt",
         "苹果16.txt",
@@ -123,6 +156,9 @@ CONFIG = {
         "苹果13.txt",
         "苹果12.txt",
     ],
+    # 产品文件夹列表。每个文件夹内必须有一个 TXT 和一张图片或一个视频。
+    # 为空时自动扫描脚本目录下所有符合条件的文件夹。
+    "send_folders": [],
 
     # ---------- 定时发送时间 ----------
     # 只在 --daemon 模式下生效
@@ -150,6 +186,9 @@ CONFIG = {
     # 支持格式：30s（秒）、5m（分钟）、1h（小时）
     # 设成 0s 表示不等待
     "interval_between_files": "3m",
+    # 视频转发完成并发送到全部群后，等待多久再处理下一组内容。
+    # 支持格式：30s（秒）、5m（分钟）、1h（小时）。
+    "video_next_step_wait": "3m",
 
     # ---------- 鼠标点击坐标（相对于微信窗口左上角） ----------
     # 如果你的微信窗口在屏幕左上角 (0,0) 位置，那这些值就和旧版坐标一样
@@ -158,6 +197,10 @@ CONFIG = {
     # click_send_offset = 点击"发送"按钮的位置
     "click_msg_offset": [1643, 811],
     "click_send_offset": [1055, 763],
+    # 粘贴图片/视频后，等待微信生成待发送卡片的秒数
+    "media_prepare_wait": 2,
+    # 图片/视频发送后，等待微信完成上传的秒数
+    "media_upload_wait": 3,
 
     # ---------- 日志详细程度 ----------
     # DEBUG：最详细，会打印每一个步骤（适合调试）
@@ -192,9 +235,14 @@ def save_config_to_file():
         k: [t.replace("：", ":") for t in v] if k == "send_times" else v
         for k, v in CONFIG.items()
     }
-    # 确保 txt_files 只存文件名（不存完整路径）
-    if "txt_files" in cleaned:
-        cleaned["txt_files"] = [os.path.basename(f) for f in cleaned["txt_files"]]
+    selected = cleaned.get("send_files", cleaned.get("txt_files", []))
+    selected = [os.path.basename(f) for f in selected]
+    cleaned["send_files"] = selected
+    # 保留旧键，便于旧版程序继续读取配置
+    cleaned["txt_files"] = list(selected)
+    cleaned["send_folders"] = [
+        os.path.basename(folder) for folder in cleaned.get("send_folders", [])
+    ]
     CONFIG.update(cleaned)
     pyautogui.PAUSE = CONFIG.get("click_delay", 0.05)
     global SPEED_FACTOR; SPEED_FACTOR = CONFIG.get("speed_factor", 1.0)
@@ -213,6 +261,10 @@ def load_config_from_file():
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 saved = json.load(f)
+            if "send_files" not in saved and "txt_files" in saved:
+                saved["send_files"] = list(saved["txt_files"])
+            if "txt_files" not in saved and "send_files" in saved:
+                saved["txt_files"] = list(saved["send_files"])
             saved["send_times"] = [t.replace("：", ":") for t in saved.get("send_times", [])]
             CONFIG.update(saved)
             try:
@@ -323,43 +375,162 @@ def activate_wechat():
 
 # ==================== 第七步：读取要发送的内容 ====================
 
-def get_available_txt_files():
-    """返回所有可用的 txt 文件（文件名列表）。"""
-    import glob
+def classify_media_file(path):
+    """Return ``text``, ``image`` or ``video`` for a supported file."""
+    extension = os.path.splitext(os.fspath(path))[1].lower()
+    if extension in TEXT_EXTENSIONS:
+        return "text"
+    if extension in IMAGE_EXTENSIONS:
+        return "image"
+    if extension in VIDEO_EXTENSIONS:
+        return "video"
+    raise ValueError(f"不支持的文件类型: {path}")
+
+
+def get_available_files():
+    """Return supported text, image, and video file names in the script folder."""
     files = []
     if os.path.isdir(SCRIPT_DIR):
-        for f in glob.glob(os.path.join(SCRIPT_DIR, "*.txt")):
-            name = os.path.basename(f)
-            if "send_stats" not in name and ".git" not in name and name not in files:
-                files.append(name)
-    files.sort(reverse=True)
-    return files
+        for entry in os.scandir(SCRIPT_DIR):
+            if not entry.is_file():
+                continue
+            try:
+                classify_media_file(entry.name)
+            except ValueError:
+                continue
+            files.append(entry.name)
+    return sorted(set(files), reverse=True)
+
+
+def get_available_txt_files():
+    """Backward-compatible alias for the expanded file discovery function."""
+    return get_available_files()
+
+
+def _selected_file_names():
+    selected = CONFIG.get("send_files")
+    if selected is None:
+        selected = CONFIG.get("txt_files", [])
+    return selected
+
+
+def _read_send_file(path):
+    """Load one supported file into the representation used by the send flow."""
+    path = os.path.abspath(os.fspath(path))
+    kind = classify_media_file(path)
+    if kind == "text":
+        with open(path, "r", encoding="utf-8") as file:
+            content = file.read().strip()
+        if not content:
+            return None
+    else:
+        content = None
+    return SendFile(
+        name=os.path.basename(path),
+        kind=kind,
+        path=path,
+        content=content,
+    )
 
 
 def read_selected_files():
     """
-    读取 CONFIG['txt_files'] 里选中的文件内容。
-    如果列表为空，则自动使用所有可用 txt。
+    读取配置中选中的文本、图片和视频文件。
+    如果列表为空，则自动使用目录中的所有支持文件。
 
     返回值：
-      [(文件名, 文件内容), ...]
+      [SendFile(...), ...]
     """
-    selected = CONFIG["txt_files"]
+    selected = _selected_file_names()
     if not selected:
-        selected = get_available_txt_files()
+        selected = get_available_files()
 
     result = []
     for name in selected:
         path = os.path.join(SCRIPT_DIR, name)
-        if not os.path.exists(path):
+        if not os.path.isfile(path):
             logger.warning(f"文件不存在，跳过: {name}")
             continue
-        with open(path, "r", encoding="utf-8") as f:
-            content = f.read().strip()
-        if content:
-            result.append((name, content))
-            logger.info(f"读取文件: {name}")
+        try:
+            item = _read_send_file(path)
+        except ValueError as exc:
+            logger.warning(str(exc))
+            continue
+        if not item:
+            logger.warning(f"文件内容为空，跳过: {name}")
+            continue
+        result.append(item)
+        logger.info(f"读取文件: {name} ({item.kind})")
     return result
+
+
+def _build_send_batch(folder_path):
+    """Build one text-then-image-or-video product batch from a folder."""
+    folder_path = os.path.abspath(os.fspath(folder_path))
+    text_files = []
+    media_files = []
+    for entry in os.scandir(folder_path):
+        if not entry.is_file():
+            continue
+        try:
+            item = _read_send_file(entry.path)
+        except ValueError:
+            continue
+        if not item:
+            continue
+        if item.kind == "text":
+            text_files.append(item)
+        elif item.kind in {"image", "video"}:
+            media_files.append(item)
+
+    if len(text_files) != 1 or len(media_files) != 1:
+        raise ValueError(
+            f"文件夹 {os.path.basename(folder_path)} 必须包含一个非空 TXT 和一张图片或一个视频"
+        )
+    return SendBatch(
+        name=os.path.basename(folder_path),
+        files=(text_files[0], media_files[0]),
+    )
+
+
+def get_available_send_folders():
+    """Return product folders containing exactly one TXT and one image or video."""
+    folders = []
+    if not os.path.isdir(SCRIPT_DIR):
+        return folders
+    for entry in os.scandir(SCRIPT_DIR):
+        if not entry.is_dir():
+            continue
+        try:
+            _build_send_batch(entry.path)
+        except ValueError:
+            continue
+        folders.append(entry.name)
+    return sorted(folders, reverse=True)
+
+
+def read_selected_batches():
+    """Load selected product folders, preserving text-before-video ordering."""
+    selected = CONFIG.get("send_folders", [])
+    folder_names = selected if selected else get_available_send_folders()
+    if folder_names:
+        batches = []
+        for name in folder_names:
+            folder_path = os.path.join(SCRIPT_DIR, name)
+            if not os.path.isdir(folder_path):
+                logger.warning(f"文件夹不存在，跳过: {name}")
+                continue
+            try:
+                batch = _build_send_batch(folder_path)
+            except ValueError as exc:
+                logger.warning(str(exc))
+                continue
+            batches.append(batch)
+            logger.info(f"读取发送组合: {batch.name}")
+        return batches
+
+    # 兼容旧版根目录文本、图片和视频文件。
+    return [SendBatch(name=item.name, files=(item,)) for item in read_selected_files()]
 
 
 # ==================== 第八步：核心发信流程 ====================
@@ -379,16 +550,23 @@ def read_selected_files():
 # 脚本会用 Ctrl+F 搜索这个名字，进入聊天窗口
 # 然后往这个窗口里发消息，方便下一步右键转发
 # 注意：必须和微信上显示的一模一样，包括标点符号
-SELF_CHAT = "A淘淘数码-同行报价号"
+SELF_CHAT = "A淘淘数码-同行号1 (支持闲鱼）"
 
 
-def send_to_self(content):
-    """
-    第一步：把内容发给自己。
-    """
+def _wait_unscaled(seconds):
+    """Wait in real seconds while still honoring the stop signal."""
+    end = time.monotonic() + max(0, float(seconds))
+    while time.monotonic() < end:
+        if STOP_EVENT.is_set():
+            raise SystemExit("紧急停止: 已触发停止信号")
+        _time_sleep(min(0.1, end - time.monotonic()))
+
+
+def _open_self_chat():
+    """Open the configured self chat and leave focus in its input area."""
     logger.info("  -> 打开搜索")
     pyautogui.hotkey("ctrl", "f")
-    time.sleep(0.5)
+    _wait_unscaled(0.5)
 
     logger.info("  -> 清空搜索框")
     pyautogui.hotkey("ctrl", "a")
@@ -397,28 +575,93 @@ def send_to_self(content):
     logger.info("  -> 粘贴昵称")
     pyperclip.copy(SELF_CHAT)
     pyautogui.hotkey("ctrl", "v")
-    time.sleep(1)
+    _wait_unscaled(1)
 
     logger.info("  -> 回车打开聊天")
     pyautogui.press("enter")
-    time.sleep(2)
+    _wait_unscaled(2)
+
+
+def send_to_self(content):
+    """Send a text message to the configured self chat."""
+    _open_self_chat()
 
     logger.info("  -> 粘贴内容并发送")
     pyperclip.copy(content)
     pyautogui.hotkey("ctrl", "v")
-    time.sleep(0.5)
+    _wait_unscaled(0.5)
 
     pyautogui.press("enter")
-    time.sleep(1.5)
+    _wait_unscaled(1.5)
 
 
-def forward_to_groups(prefix, count):
+def set_clipboard_files(paths):
+    """Put Windows file-drop data on the clipboard for WeChat Ctrl+V."""
+    paths = [os.path.abspath(os.fspath(path)) for path in paths]
+    if not paths:
+        raise ValueError("至少需要一个文件路径")
+    for path in paths:
+        if not os.path.isfile(path):
+            raise FileNotFoundError(path)
+
+    class DROPFILES(ctypes.Structure):
+        _fields_ = [
+            ("pFiles", ctypes.c_uint),
+            ("x", ctypes.c_long),
+            ("y", ctypes.c_long),
+            ("fNC", ctypes.c_int),
+            ("fWide", ctypes.c_bool),
+        ]
+
+    dropfiles = DROPFILES()
+    dropfiles.pFiles = ctypes.sizeof(DROPFILES)
+    dropfiles.fWide = True
+    file_data = ("\0".join(path.replace("/", "\\") for path in paths) + "\0\0").encode("utf-16-le")
+    clipboard_data = bytes(dropfiles) + file_data
+
+    import win32clipboard
+
+    deadline = time.monotonic() + 10
+    while True:
+        try:
+            win32clipboard.OpenClipboard()
+            win32clipboard.EmptyClipboard()
+            win32clipboard.SetClipboardData(win32clipboard.CF_HDROP, clipboard_data)
+            return
+        except Exception:
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"设置文件剪贴板超时: {paths}")
+            _time_sleep(0.1)
+        finally:
+            try:
+                win32clipboard.CloseClipboard()
+            except Exception:
+                pass
+
+
+def send_media_to_self(path):
+    """Send one image or video to the configured self chat."""
+    if not os.path.isfile(path):
+        raise FileNotFoundError(path)
+    if classify_media_file(path) not in {"image", "video"}:
+        raise ValueError(f"不是图片或视频文件: {path}")
+
+    _open_self_chat()
+    logger.info(f"  -> 选择媒体文件: {os.path.basename(path)}")
+    set_clipboard_files([path])
+    pyautogui.hotkey("ctrl", "v")
+    _wait_unscaled(CONFIG.get("media_prepare_wait", 2))
+    pyautogui.press("enter")
+    _wait_unscaled(CONFIG.get("media_upload_wait", 3))
+
+
+def forward_to_groups(prefix, count, media=False):
     """
     第二步：通过"转发"功能，把消息群发到多个群。
 
     流程详解：
        1. 右键点击刚才发出去的那条消息 → 弹出菜单
-       2. 按 5 次下箭头选到"转发" → 回车打开转发对话框
+       2. 文字按 5 次下箭头选到"转发"；视频按 3 次下箭头选到"转发"
        3. 转发对话框的搜索框里会自动有焦点，粘贴群名前缀
        4. 搜索结果中按 4 次下箭头到"展开全部" → 回车展开
        5. 按 3 次上箭头回到第一个群
@@ -449,16 +692,11 @@ def forward_to_groups(prefix, count):
     time.sleep(0.5)
 
     # ===== 2. 在右键菜单中选"转发" =====
-    # 右键菜单会出现在鼠标位置附近
-    # 菜单里有多个选项（比如：复制、转发、收藏、删除...）
-    # 我们需要选"转发"，它在菜单里排在第 X 位
-    # 按 5 次下箭头 = 从菜单顶部往下移 5 次
-    # 具体按几次取决于你的微信版本，自己测试时调整
-    for _ in range(5):
-        # for _ in range(5)：循环 5 次
-        # _ 是变量名，表示我们不关心循环到第几次了
-        pyautogui.press("down")   # 按一下下箭头
-        time.sleep(0.2)           # 等 0.2 秒让菜单项被选中
+    # 文字/图片菜单需要 5 次下移；视频菜单按截图中的顺序需要 3 次下移。
+    menu_down_count = 3 if media else 5
+    for _ in range(menu_down_count):
+        pyautogui.press("down")
+        time.sleep(0.2)
     pyautogui.press("enter")    # 回车 = 选中当前菜单项（转发）
     time.sleep(1.5)             # 等转发对话框打开
 
@@ -530,6 +768,14 @@ def send_to_prefix_groups(prefix, count, content):
     return count
 
 
+def send_media_to_prefix_groups(prefix, count, path):
+    """Send one image or video to all groups matching one prefix."""
+    send_media_to_self(path)
+    forward_to_groups(prefix, count, media=classify_media_file(path) == "video")
+    logger.info(f"[{prefix}] 已发送媒体文件 {os.path.basename(path)} 到 {count} 个群")
+    return count
+
+
 def send_to_all(content):
     """
     遍历 CONFIG 里的所有前缀，逐个发送。
@@ -566,6 +812,25 @@ def send_to_all(content):
             # 如果 send_to_prefix_groups 里出了任何错误
             # 就执行这里，不会让整个程序崩溃
             logger.error(f"前缀 {prefix} 发送失败: {e}")
+            failed += CONFIG["groups_per_prefix"]
+
+    return total, failed
+
+
+def send_media_to_all(path):
+    """Send one image or video to every configured group prefix."""
+    if not activate_wechat():
+        return 0, 0
+
+    total = 0
+    failed = 0
+    for prefix in CONFIG["group_prefixes"]:
+        try:
+            total += send_media_to_prefix_groups(
+                prefix, CONFIG["groups_per_prefix"], path
+            )
+        except Exception as exc:
+            logger.error(f"媒体文件 {os.path.basename(path)} 在前缀 {prefix} 发送失败: {exc}")
             failed += CONFIG["groups_per_prefix"]
 
     return total, failed
@@ -722,31 +987,45 @@ def do_send(verbose=False):
     参数：
       verbose: 是否显示详细输出（-v 参数开启）
     """
-    files = read_selected_files()
-    if not files:
-        logger.warning("没有找到要发送的 txt 文件")
+    batches = read_selected_batches()
+    if not batches:
+        logger.warning("没有找到要发送的文件夹组合或文件")
         return
 
     grand_total = 0
     grand_failed = 0
 
-    for idx, (name, content) in enumerate(files):
-        if verbose:
-            print(f"--- [{name}] 发送内容 ---\n{content}\n---------------")
+    for idx, batch in enumerate(batches):
+        logger.info(f"开始发送组合: {batch.name}")
+        for item in batch.files:
+            if verbose:
+                detail = item.content if item.kind == "text" else item.path
+                print(f"--- [{batch.name}/{item.name}] {item.kind} ---\n{detail}\n---------------")
 
-        logger.info(f"开始发送文件: {name}")
-        total, failed = send_to_all(content)
-        grand_total += total
-        grand_failed += failed
+            logger.info(f"开始发送文件: {item.name}")
+            if item.kind == "text":
+                total, failed = send_to_all(item.content or "")
+            else:
+                total, failed = send_media_to_all(item.path)
+            grand_total += total
+            grand_failed += failed
 
-        # 如果不是最后一个文件，按设定的间隔等待再发下一个
+        # 如果不是最后一组，按设定的间隔等待再处理下一组。
+        # 视频优先使用独立的“视频转发完成后等待”设置。
         # 注意：文件间隔是真实时间，不应该被 speed_factor 缩放
         # 所以不用 time.sleep（已被 _safe_sleep 替换）
         # 而是用原始 sleep + 每秒检测一次停止信号
-        if idx < len(files) - 1:
-            interval = parse_interval(CONFIG["interval_between_files"])
+        if idx < len(batches) - 1:
+            is_video_batch = batch.files[-1].kind == "video"
+            interval_key = (
+                "video_next_step_wait"
+                if is_video_batch
+                else "interval_between_files"
+            )
+            interval = parse_interval(CONFIG[interval_key])
             if interval > 0:
-                logger.info(f"等待 {interval} 秒后发送下一个文件...")
+                reason = "视频转发完成" if is_video_batch else "当前组合发送完成"
+                logger.info(f"{reason}，等待 {interval} 秒后发送下一组...")
                 remaining = interval
                 while remaining > 0:
                     if STOP_EVENT.is_set():

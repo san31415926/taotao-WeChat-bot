@@ -124,7 +124,7 @@ class MediaSupportTests(unittest.TestCase):
         try:
             sw.CONFIG = {"interval_between_files": "0"}
             with mock.patch.object(sw, "read_selected_batches", return_value=[batch]), \
-                    mock.patch.object(sw, "send_media_to_all", return_value=(2, 0)) as send_media, \
+                    mock.patch.object(sw, "send_batch_to_all", return_value=(2, 0)) as send_batch, \
                     mock.patch.object(sw, "load_stats", return_value={
                         "total_sends": 0, "last_send": None, "history": []
                     }), \
@@ -133,7 +133,7 @@ class MediaSupportTests(unittest.TestCase):
         finally:
             sw.CONFIG = original_config
 
-        send_media.assert_called_once_with(item.path)
+        send_batch.assert_called_once_with(batch)
 
 
 if __name__ == "__main__":

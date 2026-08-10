@@ -836,6 +836,33 @@ def send_media_to_all(path):
     return total, failed
 
 
+def send_batch_to_all(batch):
+    """Send every item in one batch to each prefix before moving to the next."""
+    if not activate_wechat():
+        return 0, 0
+
+    total = 0
+    failed = 0
+    groups_per_prefix = CONFIG["groups_per_prefix"]
+    for prefix in CONFIG["group_prefixes"]:
+        for item in batch.files:
+            try:
+                logger.info(f"[{prefix}] 开始发送文件: {item.name}")
+                if item.kind == "text":
+                    total += send_to_prefix_groups(
+                        prefix, groups_per_prefix, item.content or ""
+                    )
+                else:
+                    total += send_media_to_prefix_groups(
+                        prefix, groups_per_prefix, item.path
+                    )
+            except Exception as exc:
+                logger.error(f"文件 {item.name} 在前缀 {prefix} 发送失败: {exc}")
+                failed += groups_per_prefix
+
+    return total, failed
+
+
 # ==================== 第九步：数据统计功能 ====================
 # 每次发送后，脚本会记录：什么时间、发了多少群、成功失败各多少
 # 这些数据保存在 data/send_stats.json 文件里
@@ -1002,13 +1029,9 @@ def do_send(verbose=False):
                 detail = item.content if item.kind == "text" else item.path
                 print(f"--- [{batch.name}/{item.name}] {item.kind} ---\n{detail}\n---------------")
 
-            logger.info(f"开始发送文件: {item.name}")
-            if item.kind == "text":
-                total, failed = send_to_all(item.content or "")
-            else:
-                total, failed = send_media_to_all(item.path)
-            grand_total += total
-            grand_failed += failed
+        total, failed = send_batch_to_all(batch)
+        grand_total += total
+        grand_failed += failed
 
         # 如果不是最后一组，按设定的间隔等待再处理下一组。
         # 视频优先使用独立的“视频转发完成后等待”设置。

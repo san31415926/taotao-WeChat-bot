@@ -8,6 +8,33 @@ import send_wechat as sw
 
 
 class FolderSendOrderTests(unittest.TestCase):
+    def test_send_batch_to_all_keeps_text_and_media_together_for_each_prefix(self):
+        batch = sw.SendBatch(
+            name="product",
+            files=(
+                sw.SendFile("description.txt", "text", "C:\\data\\description.txt", "text"),
+                sw.SendFile("clip.mp4", "video", "C:\\data\\clip.mp4"),
+            ),
+        )
+        calls = []
+        original_config = sw.CONFIG.copy()
+        try:
+            sw.CONFIG = {"group_prefixes": ["00A001", "00A002"], "groups_per_prefix": 2}
+            with mock.patch.object(sw, "activate_wechat", return_value=True), \
+                    mock.patch.object(sw, "send_to_prefix_groups", side_effect=lambda prefix, count, content: calls.append(("text", prefix, content)) or count), \
+                    mock.patch.object(sw, "send_media_to_prefix_groups", side_effect=lambda prefix, count, path: calls.append(("video", prefix, path)) or count):
+                result = sw.send_batch_to_all(batch)
+        finally:
+            sw.CONFIG = original_config
+
+        self.assertEqual(result, (8, 0))
+        self.assertEqual(calls, [
+            ("text", "00A001", "text"),
+            ("video", "00A001", "C:\\data\\clip.mp4"),
+            ("text", "00A002", "text"),
+            ("video", "00A002", "C:\\data\\clip.mp4"),
+        ])
+
     def test_get_available_send_folders_returns_only_complete_text_video_pairs(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             complete = Path(temp_dir, "苹果16PM黑色256G")
@@ -72,7 +99,7 @@ class FolderSendOrderTests(unittest.TestCase):
         self.assertEqual(batches[0].files[0].content, "先发这段文字")
         self.assertEqual(batches[0].files[1].path, os.path.abspath(video_path))
 
-    def test_do_send_sends_text_then_video_for_one_folder(self):
+    def test_do_send_dispatches_each_batch_to_ordered_sender(self):
         batch = sw.SendBatch(
             name="苹果16PM黑色256G",
             files=(
@@ -80,13 +107,11 @@ class FolderSendOrderTests(unittest.TestCase):
                 sw.SendFile("视频.mp4", "video", "C:\\data\\视频.mp4"),
             ),
         )
-        calls = []
         original_config = sw.CONFIG.copy()
         try:
             sw.CONFIG = {"interval_between_files": "5s"}
             with mock.patch.object(sw, "read_selected_batches", return_value=[batch]), \
-                    mock.patch.object(sw, "send_to_all", side_effect=lambda content: calls.append(("text", content)) or (2, 0)), \
-                    mock.patch.object(sw, "send_media_to_all", side_effect=lambda path: calls.append(("video", path)) or (2, 0)), \
+                    mock.patch.object(sw, "send_batch_to_all", return_value=(4, 0)) as send_batch, \
                     mock.patch.object(sw, "_time_sleep") as wait, \
                     mock.patch.object(sw, "load_stats", return_value={
                         "total_sends": 0, "last_send": None, "history": []
@@ -96,7 +121,7 @@ class FolderSendOrderTests(unittest.TestCase):
         finally:
             sw.CONFIG = original_config
 
-        self.assertEqual(calls, [("text", "先发文字"), ("video", "C:\\data\\视频.mp4")])
+        send_batch.assert_called_once_with(batch)
         wait.assert_not_called()
 
     def test_do_send_waits_after_video_before_the_next_batch(self):
@@ -119,8 +144,7 @@ class FolderSendOrderTests(unittest.TestCase):
                 "video_next_step_wait": "2s",
             }
             with mock.patch.object(sw, "read_selected_batches", return_value=[video_batch, next_batch]), \
-                    mock.patch.object(sw, "send_to_all", return_value=(2, 0)), \
-                    mock.patch.object(sw, "send_media_to_all", return_value=(2, 0)), \
+                    mock.patch.object(sw, "send_batch_to_all", return_value=(4, 0)), \
                     mock.patch.object(sw, "_time_sleep") as wait, \
                     mock.patch.object(sw, "load_stats", return_value={
                         "total_sends": 0, "last_send": None, "history": []

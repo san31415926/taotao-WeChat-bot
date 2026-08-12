@@ -53,6 +53,12 @@ def filter_folder_names(names, query):
     return [name for name in names if query in name.casefold()]
 
 
+def format_folder_display_name(name, media_kind):
+    """Add the detected media type to a product folder's GUI label."""
+    media_label = "图片" if media_kind == "image" else "视频"
+    return f"{name}（{media_label}）"
+
+
 # ==================== 配置字段定义 ====================
 # 这是一个"元组列表"——
 # 每个元素是一个三元素的元组 (键名, 标签文字, 值类型)
@@ -524,7 +530,11 @@ class App:
         for name in names:
             full = os.path.join(sw.SCRIPT_DIR, name)
             self.all_files.append(full)
-            self.file_listbox.insert("end", name)
+            display_name = name
+            if self.file_list_mode == "folders":
+                media_kind = sw._build_send_batch(full).files[1].kind
+                display_name = format_folder_display_name(name, media_kind)
+            self.file_listbox.insert("end", display_name)
 
         # 恢复选中状态
         for i, full in enumerate(self.all_files):

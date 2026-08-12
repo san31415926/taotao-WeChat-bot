@@ -13,6 +13,16 @@ class FolderSearchTests(unittest.TestCase):
         )
         self.assertEqual(gui.filter_folder_names(names, ""), names)
 
+    def test_format_folder_display_name_marks_the_media_type(self):
+        self.assertEqual(
+            gui.format_folder_display_name("苹果16PM黑色256G", "image"),
+            "苹果16PM黑色256G（图片）",
+        )
+        self.assertEqual(
+            gui.format_folder_display_name("苹果16PM黑色256G", "video"),
+            "苹果16PM黑色256G（视频）",
+        )
+
     def test_folder_list_is_sized_larger_than_runtime_log(self):
         self.assertGreater(gui.FOLDER_LIST_HEIGHT, gui.LOG_HEIGHT)
         self.assertEqual(gui.FOLDER_SEARCH_LABEL, "搜索文件夹:")

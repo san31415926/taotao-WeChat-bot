@@ -116,6 +116,10 @@ time.sleep = _safe_sleep
 # 每一行都标明了"什么作用"和"怎么改"
 
 CONFIG = {
+    # ---------- 发给自己时的搜索名字 ----------
+    # 必须与微信中显示的名称完全一致，程序会用它打开自己的聊天窗口。
+    "self_chat": "A淘淘数码-同行号1 (支持闲鱼）",
+
     # ---------- 群名前缀 ----------
     # 你的微信群名都是 00A001xxx、00A002xxx 这种格式
     # 脚本会依次搜索每个前缀，找到对应的群并发送消息
@@ -573,7 +577,7 @@ def _open_self_chat():
     pyautogui.press("delete")
 
     logger.info("  -> 粘贴昵称")
-    pyperclip.copy(SELF_CHAT)
+    pyperclip.copy(CONFIG.get("self_chat") or SELF_CHAT)
     pyautogui.hotkey("ctrl", "v")
     _wait_unscaled(1)
 

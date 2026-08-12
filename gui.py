@@ -67,6 +67,7 @@ def format_folder_display_name(name, media_kind):
 #   如果要新增一个配置项，只需要在这里加一行，不用改其他代码
 
 CONFIG_FIELDS = [
+    ("self_chat",           "搜索名字（发给自己）",             "str"),
     ("group_prefixes",       "群名前缀（逗号分隔）",          "str_list"),
     ("groups_per_prefix",    "每个前缀群数量",                "int"),
     ("send_times",           "定时时间（逗号分隔）",           "str_list"),

@@ -33,6 +33,10 @@ class FolderSearchTests(unittest.TestCase):
             gui.CONFIG_FIELDS,
         )
 
+    def test_gui_exposes_self_chat_search_name_setting(self):
+        fields = {key: (label, value_type) for key, label, value_type in gui.CONFIG_FIELDS}
+        self.assertEqual(fields["self_chat"][1], "str")
+
 
 class FakeRoot:
     def __init__(self):

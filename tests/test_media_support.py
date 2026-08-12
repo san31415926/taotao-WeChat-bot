@@ -10,6 +10,21 @@ import send_wechat as sw
 class MediaSupportTests(unittest.TestCase):
     def test_self_chat_matches_the_wechat_search_name(self):
         self.assertEqual(sw.SELF_CHAT, "A淘淘数码-同行号1 (支持闲鱼）")
+        self.assertEqual(sw.CONFIG["self_chat"], sw.SELF_CHAT)
+
+    def test_open_self_chat_uses_configured_search_name(self):
+        original_config = sw.CONFIG.copy()
+        try:
+            sw.CONFIG = {"self_chat": "新的搜索名字"}
+            with mock.patch.object(sw.pyautogui, "hotkey"), \
+                    mock.patch.object(sw.pyautogui, "press"), \
+                    mock.patch.object(sw.pyperclip, "copy") as copy, \
+                    mock.patch.object(sw, "_wait_unscaled"):
+                sw._open_self_chat()
+        finally:
+            sw.CONFIG = original_config
+
+        copy.assert_called_once_with("新的搜索名字")
 
     def test_classify_media_file_supports_text_images_and_videos(self):
         self.assertEqual(sw.classify_media_file("内容.txt"), "text")

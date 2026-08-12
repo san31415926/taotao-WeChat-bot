@@ -197,9 +197,9 @@ CONFIG = {
     # click_send_offset = 点击"发送"按钮的位置
     "click_msg_offset": [1643, 811],
     "click_send_offset": [1055, 763],
-    # 粘贴图片/视频后，等待微信生成待发送卡片的秒数
+    # 粘贴视频后，等待微信生成待发送卡片的秒数
     "media_prepare_wait": 2,
-    # 图片/视频发送后，等待微信完成上传的秒数
+    # 视频发送后，等待微信完成上传的秒数
     "media_upload_wait": 3,
 
     # ---------- 日志详细程度 ----------
@@ -650,6 +650,13 @@ def send_media_to_self(path):
     logger.info(f"  -> 选择媒体文件: {os.path.basename(path)}")
     set_clipboard_files([path])
     pyautogui.hotkey("ctrl", "v")
+    if classify_media_file(path) == "image":
+        # 图片卡片生成快，沿用文字消息的短等待节奏。
+        _wait_unscaled(0.5)
+        pyautogui.press("enter")
+        _wait_unscaled(1.5)
+        return
+
     _wait_unscaled(CONFIG.get("media_prepare_wait", 2))
     pyautogui.press("enter")
     _wait_unscaled(CONFIG.get("media_upload_wait", 3))

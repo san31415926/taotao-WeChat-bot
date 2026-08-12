@@ -71,8 +71,8 @@ CONFIG_FIELDS = [
     ("log_level",            "日志级别",                     "choice"),
     ("click_msg_offset",     "右键坐标 X,Y（窗口左上角偏移）",  "int_pair"),
     ("click_send_offset",    "发送坐标 X,Y（窗口左上角偏移）",  "int_pair"),
-    ("media_prepare_wait",   "图片/视频载入等待秒数",           "int"),
-    ("media_upload_wait",    "图片/视频发送后等待秒数",         "int"),
+    ("media_prepare_wait",   "视频载入等待秒数",                 "int"),
+    ("media_upload_wait",    "视频发送后等待秒数",               "int"),
     # 值类型说明：
     #   str_list = 逗号分隔的字符串，解析成列表
     #   int      = 整数

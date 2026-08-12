@@ -82,17 +82,14 @@ class MediaSupportTests(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):
             sw.set_clipboard_files(["C:\\missing\\photo.png"])
 
-    def test_send_media_to_self_pastes_file_from_clipboard(self):
+    def test_image_to_self_uses_text_message_timing(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             image_path = Path(temp_dir, "照片.png")
             image_path.write_bytes(b"image")
             events = []
             original_config = sw.CONFIG.copy()
             try:
-                sw.CONFIG = {
-                    "media_prepare_wait": 2,
-                    "media_upload_wait": 3,
-                }
+                sw.CONFIG = {"media_prepare_wait": 99, "media_upload_wait": 99}
                 with mock.patch.object(sw, "_open_self_chat"), \
                         mock.patch.object(sw, "set_clipboard_files", side_effect=lambda paths: events.append(("clipboard", paths))) as set_files, \
                         mock.patch.object(sw, "_wait_unscaled", side_effect=lambda seconds: events.append(("wait", seconds))), \
@@ -108,10 +105,29 @@ class MediaSupportTests(unittest.TestCase):
         self.assertEqual(events, [
             ("clipboard", [os.path.abspath(image_path)]),
             ("hotkey", ("ctrl", "v")),
-            ("wait", 2),
+            ("wait", 0.5),
             ("press", "enter"),
-            ("wait", 3),
+            ("wait", 1.5),
         ])
+
+    def test_video_to_self_keeps_media_upload_timing(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            video_path = Path(temp_dir, "视频.mp4")
+            video_path.write_bytes(b"video")
+            events = []
+            original_config = sw.CONFIG.copy()
+            try:
+                sw.CONFIG = {"media_prepare_wait": 2, "media_upload_wait": 3}
+                with mock.patch.object(sw, "_open_self_chat"), \
+                        mock.patch.object(sw, "set_clipboard_files"), \
+                        mock.patch.object(sw, "_wait_unscaled", side_effect=lambda seconds: events.append(("wait", seconds))), \
+                        mock.patch.object(sw.pyautogui, "hotkey"), \
+                        mock.patch.object(sw.pyautogui, "press", side_effect=lambda key: events.append(("press", key))):
+                    sw.send_media_to_self(str(video_path))
+            finally:
+                sw.CONFIG = original_config
+
+        self.assertEqual(events, [("wait", 2), ("press", "enter"), ("wait", 3)])
 
     def test_do_send_dispatches_media_items_to_media_sender(self):
         item = sw.SendFile(

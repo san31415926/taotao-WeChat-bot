@@ -661,7 +661,7 @@ def forward_to_groups(prefix, count, media=False):
 
     流程详解：
        1. 右键点击刚才发出去的那条消息 → 弹出菜单
-       2. 文字按 5 次下箭头选到"转发"；视频按 3 次下箭头选到"转发"
+       2. 文字按 5 次下箭头选到"转发"；图片和视频按 3 次下箭头选到"转发"
        3. 转发对话框的搜索框里会自动有焦点，粘贴群名前缀
        4. 搜索结果中按 4 次下箭头到"展开全部" → 回车展开
        5. 按 3 次上箭头回到第一个群
@@ -692,7 +692,7 @@ def forward_to_groups(prefix, count, media=False):
     time.sleep(0.5)
 
     # ===== 2. 在右键菜单中选"转发" =====
-    # 文字/图片菜单需要 5 次下移；视频菜单按截图中的顺序需要 3 次下移。
+    # 文字菜单需要 5 次下移；图片和视频菜单按媒体消息顺序需要 3 次下移。
     menu_down_count = 3 if media else 5
     for _ in range(menu_down_count):
         pyautogui.press("down")
@@ -771,7 +771,7 @@ def send_to_prefix_groups(prefix, count, content):
 def send_media_to_prefix_groups(prefix, count, path):
     """Send one image or video to all groups matching one prefix."""
     send_media_to_self(path)
-    forward_to_groups(prefix, count, media=classify_media_file(path) == "video")
+    forward_to_groups(prefix, count, media=True)
     logger.info(f"[{prefix}] 已发送媒体文件 {os.path.basename(path)} 到 {count} 个群")
     return count
 

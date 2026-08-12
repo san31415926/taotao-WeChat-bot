@@ -70,13 +70,13 @@ class MediaSupportTests(unittest.TestCase):
 
         self.assertEqual(result, (4, 0))
 
-    def test_image_forwarding_uses_text_menu_navigation(self):
+    def test_image_forwarding_uses_the_three_down_media_menu_navigation(self):
         with mock.patch.object(sw, "send_media_to_self"), \
                 mock.patch.object(sw, "forward_to_groups") as forward:
             result = sw.send_media_to_prefix_groups("00A001", 2, "C:\\media\\photo.png")
 
         self.assertEqual(result, 2)
-        forward.assert_called_once_with("00A001", 2, media=False)
+        forward.assert_called_once_with("00A001", 2, media=True)
 
     def test_set_clipboard_files_rejects_missing_files(self):
         with self.assertRaises(FileNotFoundError):
